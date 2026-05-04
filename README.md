@@ -73,12 +73,46 @@ in them if you suspect compromise.
 | `/usr`, `/lib`, `/lib64`, `/bin` | ro | system binaries/libs |
 | `/etc/{resolv.conf,hosts,ssl,passwd,group}` | ro | network + auth |
 | `~/.config/claude`, `~/.local/share/claude` | ro | Claude config/data |
-| `~/.config/gh`, `~/.ssh`, `~/.config/jj` | ro | VCS credentials |
+| `~/.config/gh`, `~/.config/jj` | ro | VCS credentials |
 | `~/.gitconfig`, `~/.arcrc`, `~/.moz-phab-config` | ro/rw | VCS config |
 | `~/.nvm`, `~/.local/bin` | ro | Node, local tools |
+| `~/.rustup` | ro | rust toolchains (use only) |
+| `~/.ssh/{known_hosts,config}` | ro | ssh known hosts / config (keys NOT exposed; see below) |
+| `$SSH_AUTH_SOCK` | ro | ssh-agent socket forwarded for signing |
 | `~/src` | rw | Firefox source tree |
 | `~/.claude`, `~/.claude.json` | rw | Claude state |
 | `~/.local/share/rr` | rw | rr traces |
-| `~/.local/share/uv` | rw | uv package cache |
 | `~/.mozbuild` | rw | mach build artifacts |
-| `~/.cargo`, `~/.rustup` | rw | Rust toolchain |
+| `~/.sandbox/{cargo,uv,npm,pip,go}` (mounted at canonical paths) | rw | sandbox-only language toolchain caches |
+
+## Residual risks
+
+The sandbox limits blast radius but does not eliminate it. Things to be aware
+of:
+
+- **Per-repo `.git/config`.** The agent can edit `.git/config` in any repo
+  under `~/src`. Settings like `core.hooksPath`, `core.fsmonitor` or
+  `[alias] x = !shell-cmd` will be honoured by the *host's* git. Mitigate by
+  setting `core.hooksPath` in your own `~/.gitconfig` (see Host system
+  setup) and by treating sandbox-touched repos as untrusted on the host.
+
+- **Bearer tokens are readable, not just unmodifiable.** `~/.arcrc`,
+  `~/.config/gh` and `~/.moz-phab-config` are exposed so the agent can use
+  Phabricator / GitHub. Read-only mounts stop tampering but a compromised
+  agent can still copy the tokens out over the (shared) network. Network
+  egress filtering is expected to be handled separately.
+
+- **Claude state is shared with host claude.** `~/.claude` and
+  `~/.claude.json` are writable and are the same paths the host's `claude`
+  binary uses. A compromised sandbox can edit memory files, settings,
+  hooks, or MCP server lists — and a subsequent host `claude` run will pick
+  them up, *outside* the sandbox. If this matters, run host claude with
+  separate `CLAUDE_CONFIG_DIR` / data dir.
+
+- **rustup `~/.rustup` is shared read-only.** A compromised agent cannot
+  modify the host toolchain, but cannot install new toolchains either —
+  `rustup install/update` must run on the host.
+
+- **`cargo install` no longer reaches the host.** Cargo-installed CLI tools
+  live in the sandbox's `~/.cargo/bin` (under `~/.sandbox/cargo/bin`). If
+  you want a tool inside the sandbox, install it from inside `ccode`.
