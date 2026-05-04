@@ -12,7 +12,20 @@
 
 set -euo pipefail
 
-PATH=$PATH:$HOME/.cargo/bin/
+# Sandbox-private homes for language toolchains. The host's caches are NOT
+# shared into the sandbox: a compromised agent must not be able to drop a
+# malicious binary into ~/.cargo/bin, poison a crate in the cargo registry,
+# replace a wheel in the uv cache, etc., and have the host pick it up later.
+# The host toolchain binaries (rustup-managed rustc/cargo) are still exposed
+# read-only so we don't have to re-download them.
+SBX="$HOME/.sandbox"
+mkdir -p \
+    "$SBX/cargo" \
+    "$SBX/uv" \
+    "$SBX/npm" \
+    "$SBX/npm-prefix" \
+    "$SBX/pip" \
+    "$SBX/go"
 
 # Build the bwrap argv as an array. Bash does not allow `# comment` lines
 # between `\`-continued lines, so the previous form silently broke the command
@@ -51,14 +64,21 @@ args=(
 
     # --- Read-write paths ---
     --bind "$HOME/.moz-phab-config"   "$HOME/.moz-phab-config"
-    --bind "$HOME/.cargo"             "$HOME/.cargo"
     --bind "$HOME/src"                "$HOME/src"
     --bind "$HOME/.claude"            "$HOME/.claude"
     --bind "$HOME/.claude.json"       "$HOME/.claude.json"
     --bind "$HOME/.local/share/rr"    "$HOME/.local/share/rr"
-    --bind "$HOME/.local/share/uv"    "$HOME/.local/share/uv"
     --bind "$HOME/.mozbuild"          "$HOME/.mozbuild"
-    --bind "$HOME/.rustup"            "$HOME/.rustup"
+
+    # Sandbox-private toolchain caches mounted over the canonical host paths.
+    # Inside the sandbox these look like ~/.cargo, ~/.local/share/uv, etc.
+    # but the storage is in $HOME/.sandbox/<tool>, separate from the host.
+    --bind   "$SBX/cargo"             "$HOME/.cargo"
+    --bind   "$SBX/uv"                "$HOME/.local/share/uv"
+    # Rust toolchains (rustup-managed): host-shared, read-only. `rustup
+    # update` will fail inside the sandbox by design — install toolchains
+    # on the host.
+    --ro-bind "$HOME/.rustup"         "$HOME/.rustup"
 
     # --- Virtual filesystems ---
     --tmpfs /tmp
@@ -66,6 +86,14 @@ args=(
     --dev   /dev
 
     --setenv HOME "$HOME"
+
+    # Point npm/pip/go at sandbox-only caches. cargo and uv use their default
+    # locations, which are already mounted to the sandbox dirs above.
+    --setenv NPM_CONFIG_CACHE  "$SBX/npm"
+    --setenv NPM_CONFIG_PREFIX "$SBX/npm-prefix"
+    --setenv PIP_CACHE_DIR     "$SBX/pip"
+    --setenv GOPATH            "$SBX/go"
+    --setenv GOMODCACHE        "$SBX/go/pkg/mod"
 
     # --- Namespace configuration ---
     # --share-net: keep host network namespace (mach/cargo/gh need it).
