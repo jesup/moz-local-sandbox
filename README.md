@@ -18,7 +18,7 @@ it.
 
 ## Host system setup
 
-Three changes are required on the host before the sandbox works correctly with
+Two changes are required on the host before the sandbox works correctly with
 Firefox+rr.
 
 ### 1. AppArmor profile
@@ -47,16 +47,24 @@ sudo sysctl -p /etc/sysctl.d/10-perf.conf
 **Why:** `rr` requires `perf_event_open`. The default paranoia level on Ubuntu
 (≥3) blocks this for unprivileged processes. Setting it to 1 allows it.
 
-### 3. rr pidfd_getfd patch (rr source)
+### 3. Disable per-repo git hooks on the host (recommended)
 
-`rr`'s `pidfd_getfd` retrieval path only handles `ENOSYS` as a fallback
-signal; on a system returning `EPERM` (which bwrap namespacing can cause), it
-asserts instead of falling back to the `sendmsg`-over-socketpair path. Build
-`rr` from a patched source that treats `EPERM` the same as `ENOSYS` in that
-code path.
+The sandbox can write to any repository under `~/src`, including its
+`.git/hooks/` and `.git/config`. Inside the sandbox we disable hook execution,
+but a compromised agent can still drop a `.git/hooks/post-merge` (or set
+`core.hooksPath` / `core.fsmonitor` / a `[alias] x = !cmd` in `.git/config`)
+that the *host's* git would later execute as you, outside the sandbox.
 
-This is an `rr` upstream issue; check whether it has been fixed before patching
-locally.
+The cleanest defence is to make your host git ignore per-repo hooks entirely:
+
+```
+git config --global core.hooksPath ~/.git-hooks-trusted
+mkdir -p ~/.git-hooks-trusted
+```
+
+Per-repo `.git/config` is harder to neutralise — treat sandbox-touched repos
+as untrusted on the host, and audit `.git/config` before running git commands
+in them if you suspect compromise.
 
 ## What the sandbox exposes
 

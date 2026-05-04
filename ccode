@@ -25,7 +25,8 @@ mkdir -p \
     "$SBX/npm" \
     "$SBX/npm-prefix" \
     "$SBX/pip" \
-    "$SBX/go"
+    "$SBX/go" \
+    "$SBX/empty-hooks"
 
 # Build the bwrap argv as an array. Bash does not allow `# comment` lines
 # between `\`-continued lines, so the previous form silently broke the command
@@ -110,6 +111,19 @@ args=(
     --setenv PIP_CACHE_DIR     "$SBX/pip"
     --setenv GOPATH            "$SBX/go"
     --setenv GOMODCACHE        "$SBX/go/pkg/mod"
+
+    # Disable all git hook execution inside the sandbox by overriding
+    # core.hooksPath to an empty directory. GIT_CONFIG_COUNT/KEY/VALUE layers
+    # on top of the user's normal gitconfig, so identity and aliases are
+    # preserved.
+    #
+    # This protects the sandbox from running hooks a previous (compromised)
+    # invocation may have written into a repo. It does NOT prevent the
+    # sandbox from *writing* malicious hooks for the host's git to execute
+    # later — see README for the matching host-side hardening.
+    --setenv GIT_CONFIG_COUNT  "1"
+    --setenv GIT_CONFIG_KEY_0   "core.hooksPath"
+    --setenv GIT_CONFIG_VALUE_0 "$SBX/empty-hooks"
 )
 
 # Forward the ssh-agent socket if one is available on the host. The agent
