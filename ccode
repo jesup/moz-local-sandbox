@@ -1,0 +1,48 @@
+#!/bin/bash
+
+PATH=$PATH:~/.cargo/bin/
+
+bwrap \
+     --ro-bind /usr /usr \
+     --ro-bind /lib /lib \
+     --ro-bind /lib64 /lib64 \
+     --ro-bind /bin /bin \
+     --ro-bind /etc/resolv.conf /etc/resolv.conf \
+     --ro-bind /etc/alternatives/cc /etc/alternatives/cc \
+     --ro-bind /etc/hosts /etc/hosts \
+     --ro-bind /etc/ssl /etc/ssl \
+     --ro-bind /etc/passwd /etc/passwd \
+     --ro-bind /etc/group /etc/group \
+     --ro-bind "$HOME/.gitconfig" "$HOME/.gitconfig" \
+     --ro-bind "$HOME/.nvm" "$HOME/.nvm" \
+     --ro-bind "$HOME/.local/bin" "$HOME/.local/bin" \
+     --ro-bind "$HOME/.local/share/claude" "$HOME/.local/share/claude" \
+     --ro-bind "$HOME/.arcrc" "$HOME/.arcrc" \
+     --ro-bind "$HOME/.config/gh" "$HOME/.config/gh" \
+     --ro-bind "$HOME/.config/claude" "$HOME/.config/claude" \
+     --ro-bind "$HOME/.ssh" "$HOME/.ssh" \
+     --ro-bind "$HOME/.config/jj" "$HOME/.config/jj" \
+     --bind "$HOME/.moz-phab-config" "$HOME/.moz-phab-config" \
+     --bind "$HOME/.cargo" "$HOME/.cargo" \
+     --bind "$HOME/src" "$HOME/src" \
+     --bind "$HOME/.claude" "$HOME/.claude" \
+     --bind "$HOME/.claude.json" "$HOME/.claude.json" \
+     --bind "$HOME/.local/share/rr" "$HOME/.local/share/rr" \
+     --bind "$HOME/.local/share/uv" "$HOME/.local/share/uv" \
+     --bind "$HOME/.mozbuild" "$HOME/.mozbuild" \
+     --bind "$HOME/.rustup" "$HOME/.rustup" \
+     --tmpfs /tmp \
+     --proc /proc \
+     --dev /dev \
+     --setenv HOME "$HOME" \
+     --share-net \
+     --unshare-ipc \
+     --unshare-uts \
+     --unshare-cgroup-try \
+     --new-session \
+     --hostname ccode-sandbox \
+     --die-with-parent \
+     "$(command -v claude)" \
+     --permission-mode bypassPermissions \
+     --mcp-config "$HOME/.config/claude/mcp-servers.json" \
+     "$@"
