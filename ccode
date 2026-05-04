@@ -91,7 +91,17 @@ args=(
     --proc  /proc
     --dev   /dev
 
-    --setenv HOME "$HOME"
+    # --clearenv drops everything from the host environment so secrets
+    # (AWS_*, OPENAI_API_KEY, anonymous tokens, etc.) cannot leak into the
+    # sandbox. We then re-introduce only the variables the sandbox needs.
+    --clearenv
+    --setenv HOME    "$HOME"
+    --setenv USER    "${USER:-$(id -un)}"
+    --setenv LOGNAME "${LOGNAME:-${USER:-$(id -un)}}"
+    --setenv SHELL   "${SHELL:-/bin/bash}"
+    --setenv TERM    "${TERM:-xterm-256color}"
+    --setenv LANG    "${LANG:-C.UTF-8}"
+    --setenv PATH    "$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
     # Point npm/pip/go at sandbox-only caches. cargo and uv use their default
     # locations, which are already mounted to the sandbox dirs above.
@@ -116,8 +126,11 @@ args+=(
 
     # --- Namespace configuration ---
     # --share-net: keep host network namespace (mach/cargo/gh need it).
-    # --unshare-{ipc,uts,cgroup-try}: isolate everything else we can.
+    # --unshare-{pid,ipc,uts,cgroup-try}: isolate everything else we can.
+    # --unshare-pid hides host PIDs (so the agent cannot kill host processes
+    # or read /proc/<host-pid>/*) and gives the sandbox its own PID 1.
     --share-net
+    --unshare-pid
     --unshare-ipc
     --unshare-uts
     --unshare-cgroup-try
