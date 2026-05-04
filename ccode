@@ -59,8 +59,14 @@ args=(
     --ro-bind "$HOME/.arcrc"                 "$HOME/.arcrc"
     --ro-bind "$HOME/.config/gh"             "$HOME/.config/gh"
     --ro-bind "$HOME/.config/claude"         "$HOME/.config/claude"
-    --ro-bind "$HOME/.ssh"                   "$HOME/.ssh"
     --ro-bind "$HOME/.config/jj"             "$HOME/.config/jj"
+
+    # ~/.ssh is intentionally NOT bound. Read access to private keys lets a
+    # compromised agent exfiltrate them over the (shared) network. Instead
+    # forward only the ssh-agent socket and known_hosts/config below: the
+    # agent can sign auth challenges via the agent but cannot read keys.
+    --ro-bind-try "$HOME/.ssh/known_hosts"   "$HOME/.ssh/known_hosts"
+    --ro-bind-try "$HOME/.ssh/config"        "$HOME/.ssh/config"
 
     # --- Read-write paths ---
     --bind "$HOME/.moz-phab-config"   "$HOME/.moz-phab-config"
@@ -94,6 +100,19 @@ args=(
     --setenv PIP_CACHE_DIR     "$SBX/pip"
     --setenv GOPATH            "$SBX/go"
     --setenv GOMODCACHE        "$SBX/go/pkg/mod"
+)
+
+# Forward the ssh-agent socket if one is available on the host. The agent
+# inside the sandbox can use it for signing (e.g. ssh / git push) but cannot
+# read the underlying private keys.
+if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+    args+=(
+        --ro-bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK"
+        --setenv  SSH_AUTH_SOCK    "$SSH_AUTH_SOCK"
+    )
+fi
+
+args+=(
 
     # --- Namespace configuration ---
     # --share-net: keep host network namespace (mach/cargo/gh need it).
