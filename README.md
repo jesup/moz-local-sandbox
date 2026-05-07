@@ -16,6 +16,16 @@ system is read-only. Network is shared (needed for `mach`).
 Install `ccode` somewhere on your `$PATH` (e.g. `~/bin/ccode`) and `chmod +x`
 it.
 
+### Choosing what to expose read-write
+
+By default the sandbox bind-mounts `~/src` rw, so the agent can hop between
+checkouts. Two env vars let you tighten or relocate this:
+
+- `CCODE_SRC=/path/to/tree` — use a different root than `~/src`.
+- `CCODE_CWD_ONLY=1` — expose **only** the current working directory rw,
+  nothing else under `~/src`. Smaller blast radius if the agent goes off the
+  rails; the cost is no cross-repo work in that session.
+
 ## Host system setup
 
 Two changes are required on the host before the sandbox works correctly with
@@ -72,18 +82,25 @@ in them if you suspect compromise.
 |------|--------|---------|
 | `/usr`, `/lib`, `/lib64`, `/bin` | ro | system binaries/libs |
 | `/etc/{resolv.conf,hosts,ssl,passwd,group}` | ro | network + auth |
+| `/etc/alternatives/cc` | ro | default C compiler symlink |
 | `~/.config/claude`, `~/.local/share/claude` | ro | Claude config/data |
 | `~/.config/gh`, `~/.config/jj` | ro | VCS credentials |
 | `~/.gitconfig`, `~/.arcrc`, `~/.moz-phab-config` | ro/rw | VCS config |
 | `~/.nvm`, `~/.local/bin` | ro | Node, local tools |
 | `~/.rustup` | ro | rust toolchains (use only) |
+| `~/.cargo/bin` → `/opt/cargo-host/bin` | ro | host-installed cargo tools (jj, bat, …) |
 | `~/.ssh/{known_hosts,config}` | ro | ssh known hosts / config (keys NOT exposed; see below) |
 | `$SSH_AUTH_SOCK` | ro | ssh-agent socket forwarded for signing |
-| `~/src` | rw | Firefox source tree |
+| `~/src` (or `$CCODE_SRC`, or `$PWD` with `CCODE_CWD_ONLY=1`) | rw | Firefox source tree |
 | `~/.claude`, `~/.claude.json` | rw | Claude state |
 | `~/.local/share/rr` | rw | rr traces |
 | `~/.mozbuild` | rw | mach build artifacts |
-| `~/.sandbox/{cargo,uv,npm,pip,go}` (mounted at canonical paths) | rw | sandbox-only language toolchain caches |
+| `~/.sandbox/{cargo,uv,npm,npm-prefix,pip,go}` (mounted at canonical paths) | rw | sandbox-only language toolchain caches; `npm-prefix/bin` is on `PATH` for `npm i -g` |
+
+The following environment variables are forwarded into the sandbox when
+present: `GH_TOKEN` (read at launch via `gh auth token`), `PHABRICATOR_TOKEN`,
+`BMO_API_KEY`, and `SSH_AUTH_SOCK`. Everything else from the host environment
+is dropped via `--clearenv`.
 
 ## Residual risks
 

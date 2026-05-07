@@ -12,6 +12,17 @@
 
 set -euo pipefail
 
+# Source tree exposed read-write to the sandbox. Override with CCODE_SRC if
+# your checkouts live elsewhere. Set CCODE_CWD_ONLY=1 to expose only the
+# current working directory instead of the whole tree — tighter blast radius
+# at the cost of cross-repo work.
+SRC="${CCODE_SRC:-$HOME/src}"
+if [[ "${CCODE_CWD_ONLY:-0}" == "1" ]]; then
+    RW_ROOT="$(pwd)"
+else
+    RW_ROOT="$SRC"
+fi
+
 # Sandbox-private homes for language toolchains. The host's caches are NOT
 # shared into the sandbox: a compromised agent must not be able to drop a
 # malicious binary into ~/.cargo/bin, poison a crate in the cargo registry,
@@ -71,7 +82,8 @@ args=(
 
     # --- Read-write paths ---
     --bind "$HOME/.moz-phab-config"   "$HOME/.moz-phab-config"
-    --bind "$HOME/src"                "$HOME/src"
+    # Source tree (default $HOME/src, see SRC/CCODE_CWD_ONLY at top).
+    --bind "$RW_ROOT"                 "$RW_ROOT"
     --bind "$HOME/.claude"            "$HOME/.claude"
     --bind "$HOME/.claude.json"       "$HOME/.claude.json"
     --bind "$HOME/.local/share/rr"    "$HOME/.local/share/rr"
@@ -86,6 +98,12 @@ args=(
     # update` will fail inside the sandbox by design — install toolchains
     # on the host.
     --ro-bind "$HOME/.rustup"         "$HOME/.rustup"
+
+    # Host-installed cargo tools (jj, bat, etc.): mounted read-only at a
+    # separate path so the sandbox cannot overwrite them while still being
+    # able to use them. The sandbox-private ~/.cargo/bin remains first on
+    # PATH so the agent can install its own tools without touching the host.
+    --ro-bind "$HOME/.cargo/bin"      /opt/cargo-host/bin
 
     # --- Virtual filesystems ---
     --tmpfs /tmp
@@ -102,7 +120,7 @@ args=(
     --setenv SHELL   "${SHELL:-/bin/bash}"
     --setenv TERM    "${TERM:-xterm-256color}"
     --setenv LANG    "${LANG:-C.UTF-8}"
-    --setenv PATH    "$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    --setenv PATH    "$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/cargo-host/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
     # Point npm/pip/go at sandbox-only caches. cargo and uv use their default
     # locations, which are already mounted to the sandbox dirs above.
@@ -125,6 +143,17 @@ args=(
     --setenv GIT_CONFIG_KEY_0   "core.hooksPath"
     --setenv GIT_CONFIG_VALUE_0 "$SBX/empty-hooks"
 )
+
+# Forward the GitHub token so gh(1) can authenticate inside the sandbox.
+# The token lives in the host keyring and is not present in ~/.config/gh,
+# so we read it at launch time. This is consistent with the existing bearer-
+# token exposure model documented in the README.
+if _GH_TOKEN=$(gh auth token 2>/dev/null) && [[ -n "$_GH_TOKEN" ]]; then
+    args+=(--setenv GH_TOKEN "$_GH_TOKEN")
+fi
+
+[[ -n "${PHABRICATOR_TOKEN:-}" ]] && args+=(--setenv PHABRICATOR_TOKEN "$PHABRICATOR_TOKEN")
+[[ -n "${BMO_API_KEY:-}" ]]       && args+=(--setenv BMO_API_KEY       "$BMO_API_KEY")
 
 # Forward the ssh-agent socket if one is available on the host. The agent
 # inside the sandbox can use it for signing (e.g. ssh / git push) but cannot
