@@ -1,0 +1,467 @@
+#!/bin/bash
+#
+# ccode-macos — launch claude inside a sandbox-exec (Seatbelt) container.
+#
+# sandbox-exec applies a kernel-enforced sandbox profile (Apple's TinyScheme-
+# based SBPL) to a command. Filesystem access, mach lookups, signals, and
+# process introspection are restricted by the profile.
+#
+# Network is intentionally allowed: mach (Firefox build), cargo, gh, claude
+# all need it. Network filtering is expected to be handled out-of-band by a
+# separate filtering proxy.
+#
+# Note: sandbox-exec is officially deprecated by Apple but remains the only
+# unprivileged sandboxing primitive available on macOS. There is no PID-
+# namespace equivalent — host PIDs remain visible to the agent — but
+# signalling host processes is denied.
+
+set -euo pipefail
+
+# Resolve the script's own location through any symlinks (install.sh
+# symlinks this file as ~/bin/ccode). We need the real repository path
+# to find the netproxy binary and policy files alongside the script.
+_self="$0"
+while [[ -L "$_self" ]]; do
+    _link="$(readlink "$_self")"
+    if [[ "$_link" = /* ]]; then _self="$_link"
+    else _self="$(cd "$(dirname "$_self")" && pwd)/$_link"
+    fi
+done
+REPO_DIR="$(cd "$(dirname "$_self")" && pwd)"
+
+# Source tree exposed read-write to the sandbox. Override with CCODE_SRC if
+# your checkouts live elsewhere. Set CCODE_CWD_ONLY=1 to expose only the
+# current working directory instead of the whole tree — tighter blast radius
+# at the cost of cross-repo work.
+SRC="${CCODE_SRC:-$HOME/src}"
+if [[ "${CCODE_CWD_ONLY:-0}" == "1" ]]; then
+    RW_ROOT="$(pwd)"
+else
+    RW_ROOT="$SRC"
+fi
+
+# Sandbox-private homes for language toolchains. macOS has no bind-mount
+# equivalent, so we redirect each toolchain via its own env var
+# (CARGO_HOME, NPM_CONFIG_*, etc.). The host caches stay readable but the
+# sandbox writes only to ~/.sandbox/.
+SBX="$HOME/.sandbox"
+mkdir -p \
+    "$SBX/cargo" \
+    "$SBX/uv" \
+    "$SBX/npm" \
+    "$SBX/npm-prefix" \
+    "$SBX/pip" \
+    "$SBX/go" \
+    "$SBX/empty-hooks"
+
+# ~/.claude is shared rw with the host (re-exposed below). We had it
+# isolated via CLAUDE_CONFIG_DIR at one point, but Claude Code on macOS
+# spreads its login state across $HOME/.claude/, $HOME/.claude.json, AND
+# the keychain — isolating any one of them produces "you are not logged
+# in" prompts even with a valid token forwarded via env. Living with the
+# shared-state residual risk (see README) is preferable to a broken
+# login UX.
+
+# Network policy (opt-in). When CCODE_NETPOLICY is set, a host-side proxy
+# is started and the sandbox profile is locked down to only let traffic
+# reach those proxy ports on loopback. Without it, the sandbox has open
+# network egress (the historical default).
+#
+# CCODE_NETPOLICY can be either a bare name (resolved against
+# $REPO_DIR/policies/<name>.json) or an absolute path to a JSON file.
+#
+# The proxy is a single Go binary (netproxy/) that runs an HTTP CONNECT
+# proxy plus a SOCKS5 proxy in parallel, both filtering by host against
+# the policy's allowlist. Egress filtering happens at the OS level
+# (sandbox profile blocks anything off-loopback) AND at the proxy
+# (allowlist rejects unknown hosts before dialling upstream).
+NETPROXY_HTTP_PORT=""
+NETPROXY_SOCKS_PORT=""
+NETPROXY_PID=""
+NETPROXY_POLICY_PATH=""
+
+if [[ -n "${CCODE_NETPOLICY:-}" ]]; then
+    if [[ "$CCODE_NETPOLICY" = /* ]]; then
+        NETPROXY_POLICY_PATH="$CCODE_NETPOLICY"
+    else
+        NETPROXY_POLICY_PATH="$REPO_DIR/policies/${CCODE_NETPOLICY}.json"
+    fi
+    if [[ ! -f "$NETPROXY_POLICY_PATH" ]]; then
+        echo "ccode: policy not found: $NETPROXY_POLICY_PATH" >&2
+        echo "ccode: available policies:" >&2
+        ls "$REPO_DIR/policies/" 2>/dev/null | sed 's/\.json$//' | sed 's/^/  - /' >&2
+        exit 1
+    fi
+
+    NETPROXY_BIN="$REPO_DIR/bin/ccode-netproxy"
+    if [[ ! -x "$NETPROXY_BIN" ]]; then
+        echo "ccode: $NETPROXY_BIN not built. Run \`make\` in $REPO_DIR first." >&2
+        exit 1
+    fi
+
+    # --print-profile must not actually start the proxy; use sentinel
+    # placeholders so the printed profile still shows the structure.
+    if [[ "${1:-}" == "--print-profile" ]]; then
+        NETPROXY_HTTP_PORT="<HTTP_PORT>"
+        NETPROXY_SOCKS_PORT="<SOCKS_PORT>"
+    else
+        NETPROXY_STATUS="$SBX/netproxy-status-$$"
+        NETPROXY_LOG="$SBX/netproxy.log"
+        "$NETPROXY_BIN" --policy "$NETPROXY_POLICY_PATH" \
+            > "$NETPROXY_STATUS" 2> "$NETPROXY_LOG" &
+        NETPROXY_PID=$!
+        # Wait up to ~3s for the proxy to write its status line.
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            if [[ -s "$NETPROXY_STATUS" ]] && \
+               grep -q '^HTTP_PORT=' "$NETPROXY_STATUS"; then
+                break
+            fi
+            if ! kill -0 "$NETPROXY_PID" 2>/dev/null; then
+                echo "ccode: netproxy died on startup. Log ($NETPROXY_LOG):" >&2
+                cat "$NETPROXY_LOG" >&2
+                exit 1
+            fi
+            sleep 0.2
+        done
+        line=""
+        read -r line < "$NETPROXY_STATUS" 2>/dev/null || true
+        if [[ "$line" =~ HTTP_PORT=([0-9]+) ]]; then
+            NETPROXY_HTTP_PORT="${BASH_REMATCH[1]}"
+        fi
+        if [[ "$line" =~ SOCKS_PORT=([0-9]+) ]]; then
+            NETPROXY_SOCKS_PORT="${BASH_REMATCH[1]}"
+        fi
+        rm -f "$NETPROXY_STATUS"
+        if [[ -z "$NETPROXY_HTTP_PORT" || -z "$NETPROXY_SOCKS_PORT" ]]; then
+            echo "ccode: netproxy did not report ports. Log ($NETPROXY_LOG):" >&2
+            cat "$NETPROXY_LOG" >&2
+            kill "$NETPROXY_PID" 2>/dev/null || true
+            exit 1
+        fi
+        echo "ccode: netproxy started (policy=$CCODE_NETPOLICY http=$NETPROXY_HTTP_PORT socks=$NETPROXY_SOCKS_PORT)" >&2
+    fi
+fi
+
+# Compose the network section of the profile. Without a policy, allow
+# everything (historical default). With one, lock down to only the
+# loopback proxy ports — every other destination is dropped by the kernel
+# before it can reach a syscall.
+if [[ -n "$NETPROXY_HTTP_PORT" ]]; then
+    PROFILE_NETWORK="(deny network*)
+;; Only the loopback netproxy ports are reachable. The sandbox client
+;; (claude, curl, git, npm, …) uses HTTP_PROXY / HTTPS_PROXY / ALL_PROXY
+;; env vars to route egress through the proxy, which then enforces the
+;; allowlist policy and dials upstream.
+(allow network-outbound (remote ip \"localhost:$NETPROXY_HTTP_PORT\"))
+(allow network-outbound (remote ip \"localhost:$NETPROXY_SOCKS_PORT\"))"
+else
+    PROFILE_NETWORK="(allow network*)"
+fi
+
+# Build the sandbox profile (SBPL). $HOME / $RW_ROOT / $SBX are interpolated
+# by the shell into Scheme string literals — assumes paths contain no `"' or
+# `\' (true for normal Unix paths).
+PROFILE=$(cat <<SBPROFILE
+(version 1)
+(deny default)
+
+;; --- Process / IPC / signals ---
+;; Allow execing children, forking, and signalling within our own subtree.
+;; Cross-subtree signals (to host processes) are denied by default.
+(allow process-fork)
+(allow process-exec*)
+(allow process-info-pidinfo)
+(allow process-info-setcontrol)
+(allow signal (target self))
+(allow signal (target children))
+(allow sysctl-read)
+
+;; Mach services. Most system frameworks require mach-lookup to start, so
+;; we allow it broadly — but deny a hand-picked list of user-facing
+;; services that a coding agent has no reason to talk to. These are the
+;; usual sandbox-escape vectors on macOS: clipboard (pasteboard), cross-
+;; app scripting (AppleEvents), the Dock, the menu bar, and Notification
+;; Center.
+(allow mach-lookup)
+(deny mach-lookup
+  (global-name "com.apple.pasteboard.1")
+  (global-name "com.apple.pasteboard.0")
+  (global-name "com.apple.pbs.fetch_services")
+  (global-name "com.apple.pbs.fetch_services_for_pid")
+  (global-name "com.apple.coreservices.appleevents")
+  (global-name "com.apple.dock.server")
+  (global-name "com.apple.dock.fullscreen")
+  (global-name "com.apple.dock.launcher")
+  (global-name "com.apple.systemuiserver")
+  (global-name "com.apple.systemuiserver.services")
+  (global-name "com.apple.usernotifications.usernotificationservice")
+  (global-name "com.apple.usernotifications.delegate")
+  (global-name "com.apple.NotificationCenterAgent")
+  (global-name "com.apple.distributed_notifications.2"))
+(allow mach-priv-host-port)
+(allow ipc-posix-shm*)
+(allow ipc-posix-sem*)
+
+;; IOKit and unix sockets — needed for graphics, audio, system libs.
+(allow iokit-open)
+(allow system-socket)
+(allow file-ioctl)
+
+;; Stat any path (needed for traversal). Leaks file existence, not contents.
+(allow file-read-metadata)
+
+;; --- Network ---
+$PROFILE_NETWORK
+
+;; Loopback and Unix domain sockets cannot leave the host, so they are
+;; exempt from egress policy. These rules come after \$PROFILE_NETWORK and
+;; override any (deny network*) set by CCODE_NETPOLICY via last-match-wins.
+;;
+;; Needed for Marionette (Firefox remote control): the agent starts Firefox
+;; with --marionette, Firefox binds a TCP port on localhost, and the agent
+;; connects to it. Unix domain sockets are used for Firefox intra-process
+;; communication between the parent and child content processes.
+(allow network-outbound (remote ip "localhost:*"))
+(allow network-bind (local ip))
+(allow network-inbound (local ip "localhost:*"))
+(allow network-outbound (remote unix-socket))
+(allow network-bind network-inbound (local unix-socket))
+
+;; --- Read-only system filesystems ---
+;; Root-level entries are allowed so that path traversal into the allowed
+;; subpaths below works (the kernel reads the directory entry for each
+;; ancestor when resolving a path).
+(allow file-read*
+  (literal "/")
+  (literal "/Users")
+  (literal "/private")
+  (literal "/private/var")
+  (subpath "/usr")
+  (subpath "/bin")
+  (subpath "/sbin")
+  (subpath "/System")
+  (subpath "/Library")
+  (subpath "/Applications")
+  (subpath "/opt")
+  (subpath "/private/etc")
+  (subpath "/private/var/db"))
+
+;; /dev: kernel-mediated devices (null, tty, random…). Read+write.
+(allow file-read* file-write*
+  (subpath "/dev"))
+
+;; tmp dirs — writable.
+(allow file-read* file-write*
+  (subpath "/private/tmp")
+  (subpath "/private/var/folders"))
+
+;; --- Read-only user config and credentials ---
+;; Readable so the agent can authenticate; not writable so it cannot tamper.
+;; (Note: RO does not prevent exfiltration. Bearer tokens here remain within
+;; reach of a compromised agent — see README.)
+(allow file-read*
+  (literal "$HOME/.gitconfig")
+  (literal "$HOME/.arcrc")
+  (subpath "$HOME/.nvm")
+  (subpath "$HOME/.local/bin")
+  (subpath "$HOME/.local/share/claude")
+  (subpath "$HOME/.config/gh")
+  (subpath "$HOME/.config/claude")
+  (subpath "$HOME/.config/jj")
+  (subpath "$HOME/.rustup")
+  (subpath "$HOME/.cargo/bin")
+  (literal "$HOME/.ssh/known_hosts")
+  (literal "$HOME/.ssh/config"))
+
+
+;; ~/.ssh is intentionally NOT bound. Read access to private keys lets a
+;; compromised agent exfiltrate them over the (allowed) network. The
+;; ssh-agent socket is forwarded conditionally below: the agent can sign
+;; auth challenges via the agent but cannot read the underlying keys.
+
+;; macOS Keychain: needed RW for Claude Code on macOS. The OAuth token
+;; lives under "Claude Code" in the login keychain; claude reads it at
+;; startup and rewrites it on /login (token refresh). RO-only here makes
+;; /login fail with "Failed to save API key to macOS Keychain".
+;;
+;; The sandbox-profile RW is at the *file* level. Per-entry access in the
+;; keychain DB is still gated by securityd ACLs, so the agent cannot
+;; silently dump unrelated entries (Slack, 1Password, etc.) — those ACLs
+;; pop a consent prompt or deny. Reading and writing the Claude Code
+;; entry is what works after the user clicks Always Allow once.
+;;
+;; CLAUDE_CODE_OAUTH_TOKEN is still forwarded via env (see launcher) as a
+;; fallback for first-launch / fresh machines where claude has not yet
+;; been granted keychain access.
+(allow file-read* file-write*
+  (subpath "$HOME/Library/Keychains")
+  (subpath "/Library/Keychains")
+  (subpath "/private/var/db/SystemKey")
+  (subpath "/private/var/db/mds"))
+
+;; --- Read-write paths ---
+;; ~/.claude and ~/.claude.json are rw-shared with host. A compromised
+;; sandbox can edit settings, hooks, skills or MCP entries that the host
+;; claude would later execute. The real exfil defence is the netproxy
+;; (CCODE_NETPOLICY), not in-app file isolation.
+(allow file-read* file-write*
+  (literal "$HOME/.moz-phab-config")
+  (subpath "$RW_ROOT")
+  (subpath "$HOME/.claude")
+  (literal "$HOME/.claude.json")
+  (subpath "$HOME/.mozbuild")
+  (subpath "$SBX"))
+SBPROFILE
+)
+
+# Conditionally allow the ssh-agent socket. SSH_AUTH_SOCK on macOS is
+# typically a path under /private/tmp/com.apple.launchd.*, already covered
+# above, but be explicit so a non-default location works too.
+if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+    PROFILE+=$'\n'"(allow file-read* file-write* network-outbound (literal \"$SSH_AUTH_SOCK\"))"
+fi
+
+# Build the env passed into the sandbox. env -i clears the host environment
+# so secrets (AWS_*, OPENAI_API_KEY, etc.) cannot leak in. We re-introduce
+# only what the sandbox needs.
+ENV_ARGS=(
+    HOME="$HOME"
+    USER="${USER:-$(id -un)}"
+    LOGNAME="${LOGNAME:-${USER:-$(id -un)}}"
+    SHELL="${SHELL:-/bin/zsh}"
+    TERM="${TERM:-xterm-256color}"
+    LANG="${LANG:-en_US.UTF-8}"
+    # Sandbox-installed cargo bin first, then host cargo bin (read-only,
+    # provides the rustup-managed `cargo`/`rustc` shims), then the rest.
+    PATH="$SBX/cargo/bin:$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+
+    # Toolchain caches redirected to sandbox-private locations.
+    NPM_CONFIG_CACHE="$SBX/npm"
+    NPM_CONFIG_PREFIX="$SBX/npm-prefix"
+    PIP_CACHE_DIR="$SBX/pip"
+    GOPATH="$SBX/go"
+    GOMODCACHE="$SBX/go/pkg/mod"
+    CARGO_HOME="$SBX/cargo"
+    UV_CACHE_DIR="$SBX/uv"
+
+    # Rust toolchains (rustup-managed): host-shared, read-only. `rustup
+    # update` will fail inside the sandbox by design — install toolchains
+    # on the host.
+    RUSTUP_HOME="$HOME/.rustup"
+
+    # Disable all git hook execution inside the sandbox by overriding
+    # core.hooksPath to an empty directory. GIT_CONFIG_COUNT/KEY/VALUE layers
+    # on top of the user's normal gitconfig, so identity and aliases are
+    # preserved.
+    #
+    # This protects the sandbox from running hooks a previous (compromised)
+    # invocation may have written into a repo. It does NOT prevent the
+    # sandbox from *writing* malicious hooks for the host's git to execute
+    # later — see README for the matching host-side hardening.
+    GIT_CONFIG_COUNT="1"
+    GIT_CONFIG_KEY_0="core.hooksPath"
+    GIT_CONFIG_VALUE_0="$SBX/empty-hooks"
+)
+
+# Note: we used to forward Claude Code's OAuth token via
+# CLAUDE_CODE_OAUTH_TOKEN, extracted from the host keychain with
+# `security find-generic-password -s "Claude Code"`. That was needed when
+# the sandbox profile had no keychain access. Now that ~/Library/Keychains
+# is rw inside the sandbox (claude needs it for /login token refresh
+# anyway), the env-var forwarding is redundant — and worse, claude warns
+# about the conflict between the env-var token and the /login-managed
+# keychain key. So we let the keychain be the single source of truth.
+
+# Forward the GitHub token so gh(1) can authenticate inside the sandbox.
+# The token lives in the host keyring and is not present in ~/.config/gh,
+# so we read it at launch time.
+if _GH_TOKEN=$(gh auth token 2>/dev/null) && [[ -n "$_GH_TOKEN" ]]; then
+    ENV_ARGS+=(GH_TOKEN="$_GH_TOKEN")
+fi
+[[ -n "${PHABRICATOR_TOKEN:-}" ]] && ENV_ARGS+=(PHABRICATOR_TOKEN="$PHABRICATOR_TOKEN")
+[[ -n "${BMO_API_KEY:-}" ]]       && ENV_ARGS+=(BMO_API_KEY="$BMO_API_KEY")
+if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+    ENV_ARGS+=(SSH_AUTH_SOCK="$SSH_AUTH_SOCK")
+fi
+
+# When the netproxy is running, point the sandbox's HTTP and TCP clients
+# at it. Tools that respect HTTP_PROXY/HTTPS_PROXY (curl, git, npm, pip,
+# Node's http/https, Python requests, cargo, gh, claude itself) route via
+# the HTTP CONNECT proxy. ALL_PROXY=socks5h://... catches anything that
+# speaks SOCKS5 (notably ssh with -o ProxyCommand or recent gh versions
+# for SSH-mode git). NO_PROXY excludes loopback so direct connections to
+# the proxy itself don't loop infinitely.
+if [[ -n "$NETPROXY_HTTP_PORT" && "$NETPROXY_HTTP_PORT" != "<HTTP_PORT>" ]]; then
+    ENV_ARGS+=(
+        HTTP_PROXY="http://127.0.0.1:$NETPROXY_HTTP_PORT"
+        HTTPS_PROXY="http://127.0.0.1:$NETPROXY_HTTP_PORT"
+        http_proxy="http://127.0.0.1:$NETPROXY_HTTP_PORT"
+        https_proxy="http://127.0.0.1:$NETPROXY_HTTP_PORT"
+        ALL_PROXY="socks5h://127.0.0.1:$NETPROXY_SOCKS_PORT"
+        all_proxy="socks5h://127.0.0.1:$NETPROXY_SOCKS_PORT"
+        NO_PROXY="localhost,127.0.0.1,::1"
+        no_proxy="localhost,127.0.0.1,::1"
+    )
+fi
+
+# Debug helper: print the assembled profile and exit. Used by the test suite
+# and useful for inspecting what the sandbox actually allows on this host.
+if [[ "${1:-}" == "--print-profile" ]]; then
+    printf '%s\n' "$PROFILE"
+    exit 0
+fi
+
+# Opt-in host-side noexec: with CCODE_NOEXEC=1, any file under $RW_ROOT
+# that gains +x (or is created with +x) during the sandbox session has
+# the execute bit stripped on exit. This is the macOS equivalent of the
+# Linux `bwrap`-on-host-with-MS_NOEXEC trick — we can't bind-mount on
+# macOS, so we detect-and-strip instead of mount-with-noexec. Files that
+# already had +x before launch are left alone (mtime-based diff).
+NOEXEC_MARKER=""
+if [[ "${CCODE_NOEXEC:-0}" == "1" ]]; then
+    NOEXEC_MARKER="$SBX/noexec-marker-$$"
+    : > "$NOEXEC_MARKER"
+fi
+
+cleanup() {
+    if [[ -n "$NETPROXY_PID" ]] && kill -0 "$NETPROXY_PID" 2>/dev/null; then
+        kill "$NETPROXY_PID" 2>/dev/null || true
+        # Give it a moment to flush logs cleanly; SIGKILL if it hangs.
+        for _ in 1 2 3 4 5; do
+            kill -0 "$NETPROXY_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -9 "$NETPROXY_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$NOEXEC_MARKER" && -f "$NOEXEC_MARKER" ]]; then
+        # find: files newer than the marker that currently have any x bit set,
+        # then chmod a-x. -perm +ugo+x matches if ANY x bit is set. The `+`
+        # batches into single chmod invocations for speed.
+        local count
+        count=$(/usr/bin/find "$RW_ROOT" -type f -newer "$NOEXEC_MARKER" \
+                    -perm +ugo+x 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')
+        if [[ "$count" -gt 0 ]]; then
+            echo "ccode: noexec — stripping +x from $count file(s) modified during session" >&2
+            /usr/bin/find "$RW_ROOT" -type f -newer "$NOEXEC_MARKER" \
+                -perm +ugo+x -exec /bin/chmod a-x {} + 2>/dev/null
+        fi
+        rm -f "$NOEXEC_MARKER"
+    fi
+}
+trap cleanup EXIT
+
+# bypassPermissions: filesystem restrictions above replace claude's per-tool
+# permission prompts. --mcp-config is added if the user has one.
+CLAUDE_ARGS=(--permission-mode bypassPermissions)
+MCP_CONFIG="$HOME/.config/claude/mcp-servers.json"
+[[ -f "$MCP_CONFIG" ]] && CLAUDE_ARGS+=(--mcp-config "$MCP_CONFIG")
+
+# Run without `exec` so the EXIT trap (noexec_strip) fires after the
+# sandbox exits. Bash sits between the controlling TTY and the sandboxed
+# process; signal forwarding for foreground process groups (Ctrl+C in the
+# TUI) still works normally.
+env -i "${ENV_ARGS[@]}" \
+    sandbox-exec -p "$PROFILE" \
+    "$(command -v claude)" \
+    "${CLAUDE_ARGS[@]}" \
+    "$@"

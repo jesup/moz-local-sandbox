@@ -1,0 +1,50 @@
+{
+  "name": "anthropic-mozilla",
+  "description": "Anthropic API plus the package registries and code hosts a Firefox developer needs day-to-day. Drops everything else (LAN, link-local, random internet).",
+  "allowedDomains": [
+    "api.anthropic.com",
+    "statsig.anthropic.com",
+    "*.anthropic.com",
+
+    "github.com",
+    "*.github.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+    "*.githubusercontent.com",
+    "raw.githubusercontent.com",
+
+    "registry.npmjs.org",
+    "*.npmjs.org",
+    "*.npmjs.com",
+
+    "crates.io",
+    "static.crates.io",
+    "index.crates.io",
+
+    "pypi.org",
+    "files.pythonhosted.org",
+    "*.pythonhosted.org",
+
+    "hg.mozilla.org",
+    "*.mozilla.org",
+    "*.mozilla.com",
+    "*.mozaws.net",
+    "firefox-ci-tc.services.mozilla.com",
+    "community-tc.services.mozilla.com",
+    "phabricator.services.mozilla.com",
+    "bugzilla.mozilla.org",
+    "treeherder.mozilla.org",
+    "treestatus.mozilla-releng.net",
+    "*.mozilla-releng.net",
+
+    "ftp.mozilla.org",
+    "archive.mozilla.org",
+    "download.mozilla.org",
+    "product-details.mozilla.org",
+    "addons.mozilla.org",
+
+    "*.gstatic.com",
+    "*.googleapis.com"
+  ],
+  "deniedDomains": []
+}
