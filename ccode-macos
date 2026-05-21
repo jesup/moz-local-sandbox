@@ -380,6 +380,15 @@ if _GH_TOKEN=$(gh auth token 2>/dev/null) && [[ -n "$_GH_TOKEN" ]]; then
 fi
 [[ -n "${PHABRICATOR_TOKEN:-}" ]] && ENV_ARGS+=(PHABRICATOR_TOKEN="$PHABRICATOR_TOKEN")
 [[ -n "${BMO_API_KEY:-}" ]]       && ENV_ARGS+=(BMO_API_KEY="$BMO_API_KEY")
+# MOZCONFIG points to a directory that may contain executables (compilers,
+# build tools, wrappers). Like the sandbox-private toolchain caches, a
+# compromised agent could drop malicious binaries here for the host to pick
+# up later. Accept the residual risk: the directory must be rw so mach can
+# write build artefacts into it.
+if [[ -n "${MOZCONFIG:-}" ]]; then
+    ENV_ARGS+=(MOZCONFIG="$MOZCONFIG")
+    PROFILE+=$'\n'"(allow file-read* file-write* (subpath \"$MOZCONFIG\"))"
+fi
 if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
     ENV_ARGS+=(SSH_AUTH_SOCK="$SSH_AUTH_SOCK")
 fi

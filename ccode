@@ -48,6 +48,7 @@ args=(
     --ro-bind /lib /lib
     --ro-bind /lib64 /lib64
     --ro-bind /bin /bin
+    --ro-bind-try /snap /snap
 
     # --- Read-only network / auth config ---
     # resolv.conf and hosts: DNS for mach, gh, etc.
@@ -120,7 +121,7 @@ args=(
     --setenv SHELL   "${SHELL:-/bin/bash}"
     --setenv TERM    "${TERM:-xterm-256color}"
     --setenv LANG    "${LANG:-C.UTF-8}"
-    --setenv PATH    "$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/cargo-host/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    --setenv PATH    "$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/cargo-host/bin:/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
     # Point npm/pip/go at sandbox-only caches. cargo and uv use their default
     # locations, which are already mounted to the sandbox dirs above.
@@ -154,6 +155,14 @@ fi
 
 [[ -n "${PHABRICATOR_TOKEN:-}" ]] && args+=(--setenv PHABRICATOR_TOKEN "$PHABRICATOR_TOKEN")
 [[ -n "${BMO_API_KEY:-}" ]]       && args+=(--setenv BMO_API_KEY       "$BMO_API_KEY")
+# MOZCONFIG points to a directory that may contain executables (compilers,
+# build tools, wrappers). Like the sandbox-private toolchain caches, a
+# compromised agent could drop malicious binaries here for the host to pick
+# up later. Accept the residual risk: the directory must be rw so mach can
+# write build artefacts into it.
+if [[ -n "${MOZCONFIG:-}" ]]; then
+    args+=(--bind "$MOZCONFIG" "$MOZCONFIG" --setenv MOZCONFIG "$MOZCONFIG")
+fi
 
 # Forward the ssh-agent socket if one is available on the host. The agent
 # inside the sandbox can use it for signing (e.g. ssh / git push) but cannot
