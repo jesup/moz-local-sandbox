@@ -17,8 +17,9 @@ set -euo pipefail
 # current working directory instead of the whole tree — tighter blast radius
 # at the cost of cross-repo work.
 SRC="${CCODE_SRC:-$HOME/src}"
+CWD="$(pwd)"
 if [[ "${CCODE_CWD_ONLY:-0}" == "1" ]]; then
-    RW_ROOT="$(pwd)"
+    RW_ROOT="$CWD"
 else
     RW_ROOT="$SRC"
 fi
@@ -84,7 +85,10 @@ args=(
     # --- Read-write paths ---
     --bind "$HOME/.moz-phab-config"   "$HOME/.moz-phab-config"
     # Source tree (default $HOME/src, see SRC/CCODE_CWD_ONLY at top).
+    # cwd is always rw regardless of CCODE_CWD_ONLY; when cwd is under
+    # RW_ROOT the second bind is a no-op overlay.
     --bind "$RW_ROOT"                 "$RW_ROOT"
+    --bind "$CWD"                     "$CWD"
     --bind "$HOME/.claude"            "$HOME/.claude"
     --bind "$HOME/.claude.json"       "$HOME/.claude.json"
     --bind "$HOME/.local/share/rr"    "$HOME/.local/share/rr"

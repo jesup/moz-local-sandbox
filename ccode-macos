@@ -34,8 +34,9 @@ REPO_DIR="$(cd "$(dirname "$_self")" && pwd)"
 # current working directory instead of the whole tree — tighter blast radius
 # at the cost of cross-repo work.
 SRC="${CCODE_SRC:-$HOME/src}"
+CWD="$(pwd)"
 if [[ "${CCODE_CWD_ONLY:-0}" == "1" ]]; then
-    RW_ROOT="$(pwd)"
+    RW_ROOT="$CWD"
 else
     RW_ROOT="$SRC"
 fi
@@ -307,6 +308,7 @@ $PROFILE_NETWORK
 (allow file-read* file-write*
   (literal "$HOME/.moz-phab-config")
   (subpath "$RW_ROOT")
+  (subpath "$CWD")
   (subpath "$HOME/.claude")
   (literal "$HOME/.claude.json")
   (subpath "$HOME/.mozbuild")
