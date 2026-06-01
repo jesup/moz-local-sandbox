@@ -56,7 +56,7 @@ args=(
     # ssl: CA bundle for HTTPS.
     # passwd, group: uid/gid -> name resolution.
     --ro-bind /etc/resolv.conf      /etc/resolv.conf
-    --ro-bind-try /etc/alternatives/cc  /etc/alternatives/cc
+    --ro-bind-try /etc/alternatives/cc  /etc/alternatives/cc  # absent on Fedora and newer distros
     --ro-bind /etc/hosts            /etc/hosts
     --ro-bind /etc/ssl              /etc/ssl
     --ro-bind /etc/passwd           /etc/passwd
@@ -72,7 +72,7 @@ args=(
     --ro-bind "$HOME/.local/share/claude"    "$HOME/.local/share/claude"
     --ro-bind "$HOME/.arcrc"                 "$HOME/.arcrc"
     --ro-bind "$HOME/.config/gh"             "$HOME/.config/gh"
-    --ro-bind-try "$HOME/.config/claude"     "$HOME/.config/claude"
+    --ro-bind-try "$HOME/.config/claude"     "$HOME/.config/claude"  # may not exist; mcp-servers.json searched explicitly below
     --ro-bind "$HOME/.config/jj"             "$HOME/.config/jj"
 
     # ~/.ssh is intentionally NOT bound. Read access to private keys lets a
@@ -168,6 +168,9 @@ if [[ -n "${MOZCONFIG:-}" ]]; then
     args+=(--bind "$MOZCONFIG" "$MOZCONFIG" --setenv MOZCONFIG "$MOZCONFIG")
 fi
 
+# MOZBUILD_STATE_PATH overrides the default ~/.mozbuild for mach build state.
+# Validate that it lands inside an already-accessible path; an arbitrary host
+# path would otherwise gain rw access inside the sandbox without a bind mount.
 if [[ -n "${MOZBUILD_STATE_PATH:-}" ]]; then
     _mbpath="$(realpath -m "$MOZBUILD_STATE_PATH")"
     _mapped=false
@@ -217,7 +220,9 @@ args+=(
 )
 
 # bypassPermissions: filesystem restrictions above replace claude's per-tool
-# permission prompts. --mcp-config wires up the rr MCP server.
+# permission prompts. --mcp-config wires up the rr MCP server if present.
+# Claude Code stores mcp-servers.json in either ~/.config/claude/ or ~/.claude/
+# depending on version/platform; check both and use the first match.
 MCP_CONFIG=""
 for _candidate in "$HOME/.config/claude/mcp-servers.json" "$HOME/.claude/mcp-servers.json"; do
     if [[ -f "$_candidate" ]]; then

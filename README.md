@@ -178,7 +178,7 @@ should succeed, ones that should be denied, and confirms the script's
 |------|--------|---------|
 | `/usr`, `/lib`, `/lib64`, `/bin` | ro | system binaries/libs |
 | `/etc/{resolv.conf,hosts,ssl,passwd,group}` | ro | network + auth |
-| `/etc/alternatives/cc` | ro | default C compiler symlink |
+| `/etc/alternatives/cc` | ro | default C compiler symlink (Ubuntu/Debian; skipped if absent) |
 | `~/.config/claude`, `~/.local/share/claude` | ro | Claude config/data |
 | `~/.config/gh`, `~/.config/jj` | ro | VCS credentials |
 | `~/.gitconfig`, `~/.arcrc`, `~/.moz-phab-config` | ro/rw | VCS config |
@@ -242,6 +242,12 @@ present: `GH_TOKEN` (read at launch via `gh auth token`),
 `PHABRICATOR_TOKEN`, `BMO_API_KEY`, and `SSH_AUTH_SOCK`. Everything else
 from the host environment is dropped (`--clearenv` on Linux, `env -i` on
 macOS).
+
+`MOZCONFIG` and `MOZBUILD_STATE_PATH` are also forwarded when set. `MOZCONFIG`
+is additionally bind-mounted rw (Linux) or granted a profile subpath rule
+(macOS) so `mach` can write build artifacts into it. `MOZBUILD_STATE_PATH` must
+resolve inside an already-accessible writable path (`~/.mozbuild`, `$CCODE_SRC`,
+or `$PWD`); the script exits with an error if it points outside those roots.
 
 On macOS, Claude Code uses the login keychain as its sole credential
 store, so `~/Library/Keychains` is exposed rw to the sandbox: the

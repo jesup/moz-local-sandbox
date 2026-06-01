@@ -391,6 +391,27 @@ if [[ -n "${MOZCONFIG:-}" ]]; then
     ENV_ARGS+=(MOZCONFIG="$MOZCONFIG")
     PROFILE+=$'\n'"(allow file-read* file-write* (subpath \"$MOZCONFIG\"))"
 fi
+# MOZBUILD_STATE_PATH overrides the default ~/.mozbuild for mach build state.
+# Validate that it's inside an already-writable path before granting a new
+# profile subpath rule; an arbitrary host path would otherwise escape the
+# sandbox policy with rw access.
+if [[ -n "${MOZBUILD_STATE_PATH:-}" ]]; then
+    _mbpath="$(realpath -m "$MOZBUILD_STATE_PATH")"
+    _mapped=false
+    for _prefix in "$HOME/.mozbuild" "$RW_ROOT" "$CWD"; do
+        if [[ "$_mbpath" == "$(realpath -m "$_prefix")"* ]]; then
+            _mapped=true
+            break
+        fi
+    done
+    if [[ "$_mapped" == false ]]; then
+        echo "error: destination of MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH is outside the sandbox." >&2
+        echo "It must be under one of: ~/.mozbuild, $RW_ROOT, or $CWD" >&2
+        exit 1
+    fi
+    ENV_ARGS+=(MOZBUILD_STATE_PATH="$MOZBUILD_STATE_PATH")
+    PROFILE+=$'\n'"(allow file-read* file-write* (subpath \"$_mbpath\"))"
+fi
 if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
     ENV_ARGS+=(SSH_AUTH_SOCK="$SSH_AUTH_SOCK")
 fi
@@ -463,9 +484,17 @@ trap cleanup EXIT
 
 # bypassPermissions: filesystem restrictions above replace claude's per-tool
 # permission prompts. --mcp-config is added if the user has one.
+# Claude Code stores mcp-servers.json in either ~/.config/claude/ or ~/.claude/
+# depending on version/platform; check both and use the first match.
 CLAUDE_ARGS=(--permission-mode bypassPermissions)
-MCP_CONFIG="$HOME/.config/claude/mcp-servers.json"
-[[ -f "$MCP_CONFIG" ]] && CLAUDE_ARGS+=(--mcp-config "$MCP_CONFIG")
+MCP_CONFIG=""
+for _candidate in "$HOME/.config/claude/mcp-servers.json" "$HOME/.claude/mcp-servers.json"; do
+    if [[ -f "$_candidate" ]]; then
+        MCP_CONFIG="$_candidate"
+        break
+    fi
+done
+[[ -n "$MCP_CONFIG" ]] && CLAUDE_ARGS+=(--mcp-config "$MCP_CONFIG")
 
 # Run without `exec` so the EXIT trap (noexec_strip) fires after the
 # sandbox exits. Bash sits between the controlling TTY and the sandboxed
