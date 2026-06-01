@@ -56,7 +56,7 @@ args=(
     # ssl: CA bundle for HTTPS.
     # passwd, group: uid/gid -> name resolution.
     --ro-bind /etc/resolv.conf      /etc/resolv.conf
-    --ro-bind /etc/alternatives/cc  /etc/alternatives/cc
+    --ro-bind-try /etc/alternatives/cc  /etc/alternatives/cc
     --ro-bind /etc/hosts            /etc/hosts
     --ro-bind /etc/ssl              /etc/ssl
     --ro-bind /etc/passwd           /etc/passwd
@@ -72,7 +72,7 @@ args=(
     --ro-bind "$HOME/.local/share/claude"    "$HOME/.local/share/claude"
     --ro-bind "$HOME/.arcrc"                 "$HOME/.arcrc"
     --ro-bind "$HOME/.config/gh"             "$HOME/.config/gh"
-    --ro-bind "$HOME/.config/claude"         "$HOME/.config/claude"
+    --ro-bind-try "$HOME/.config/claude"     "$HOME/.config/claude"
     --ro-bind "$HOME/.config/jj"             "$HOME/.config/jj"
 
     # ~/.ssh is intentionally NOT bound. Read access to private keys lets a
@@ -168,6 +168,23 @@ if [[ -n "${MOZCONFIG:-}" ]]; then
     args+=(--bind "$MOZCONFIG" "$MOZCONFIG" --setenv MOZCONFIG "$MOZCONFIG")
 fi
 
+if [[ -n "${MOZBUILD_STATE_PATH:-}" ]]; then
+    _mbpath="$(realpath -m "$MOZBUILD_STATE_PATH")"
+    _mapped=false
+    for _prefix in "$HOME/.mozbuild" "$RW_ROOT" "$CWD"; do
+        if [[ "$_mbpath" == "$(realpath -m "$_prefix")"* ]]; then
+            _mapped=true
+            break
+        fi
+    done
+    if [[ "$_mapped" == false ]]; then
+        echo "error: MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH is outside the sandbox." >&2
+        echo "It must be under one of: ~/.mozbuild, $RW_ROOT, or $CWD" >&2
+        exit 1
+    fi
+    args+=(--setenv MOZBUILD_STATE_PATH "$MOZBUILD_STATE_PATH")
+fi
+
 # Forward the ssh-agent socket if one is available on the host. The agent
 # inside the sandbox can use it for signing (e.g. ssh / git push) but cannot
 # read the underlying private keys.
@@ -201,8 +218,16 @@ args+=(
 
 # bypassPermissions: filesystem restrictions above replace claude's per-tool
 # permission prompts. --mcp-config wires up the rr MCP server.
+MCP_CONFIG=""
+for _candidate in "$HOME/.config/claude/mcp-servers.json" "$HOME/.claude/mcp-servers.json"; do
+    if [[ -f "$_candidate" ]]; then
+        MCP_CONFIG="$_candidate"
+        break
+    fi
+done
+
 exec bwrap "${args[@]}" \
     "$(command -v claude)" \
     --permission-mode bypassPermissions \
-    --mcp-config "$HOME/.config/claude/mcp-servers.json" \
+    ${MCP_CONFIG:+--mcp-config "$MCP_CONFIG"} \
     "$@"
