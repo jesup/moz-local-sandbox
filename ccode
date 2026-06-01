@@ -56,7 +56,7 @@ args=(
     # ssl: CA bundle for HTTPS.
     # passwd, group: uid/gid -> name resolution.
     --ro-bind /etc/resolv.conf      /etc/resolv.conf
-    --ro-bind /etc/alternatives/cc  /etc/alternatives/cc
+    --ro-bind-try /etc/alternatives/cc  /etc/alternatives/cc
     --ro-bind /etc/hosts            /etc/hosts
     --ro-bind /etc/ssl              /etc/ssl
     --ro-bind /etc/passwd           /etc/passwd
@@ -72,7 +72,7 @@ args=(
     --ro-bind "$HOME/.local/share/claude"    "$HOME/.local/share/claude"
     --ro-bind "$HOME/.arcrc"                 "$HOME/.arcrc"
     --ro-bind "$HOME/.config/gh"             "$HOME/.config/gh"
-    --ro-bind "$HOME/.config/claude"         "$HOME/.config/claude"
+    --ro-bind-try "$HOME/.config/claude"     "$HOME/.config/claude"
     --ro-bind "$HOME/.config/jj"             "$HOME/.config/jj"
 
     # ~/.ssh is intentionally NOT bound. Read access to private keys lets a
@@ -201,8 +201,16 @@ args+=(
 
 # bypassPermissions: filesystem restrictions above replace claude's per-tool
 # permission prompts. --mcp-config wires up the rr MCP server.
+MCP_CONFIG=""
+for _candidate in "$HOME/.config/claude/mcp-servers.json" "$HOME/.claude/mcp-servers.json"; do
+    if [[ -f "$_candidate" ]]; then
+        MCP_CONFIG="$_candidate"
+        break
+    fi
+done
+
 exec bwrap "${args[@]}" \
     "$(command -v claude)" \
     --permission-mode bypassPermissions \
-    --mcp-config "$HOME/.config/claude/mcp-servers.json" \
+    ${MCP_CONFIG:+--mcp-config "$MCP_CONFIG"} \
     "$@"

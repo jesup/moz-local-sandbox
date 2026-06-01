@@ -100,10 +100,10 @@ Restore with `chmod +x <file>` on the host. There is no automatic restore.
 
 ### Linux
 
-Two changes are required on the host before the sandbox works correctly with
-Firefox+rr.
+One or two changes are required on the host before the sandbox works correctly
+with Firefox+rr, depending on the distro.
 
-#### 1. AppArmor profile
+#### 1. AppArmor profile (Ubuntu/Debian only)
 
 Replace `/etc/apparmor.d/bwrap-userns-restrict` with the file in
 `apparmor/bwrap-userns-restrict`, then reload:
@@ -119,6 +119,10 @@ processes that create their own user namespaces. AppArmor enforces these checks
 across namespace boundaries, causing `rr` to fail. The patched profile has that
 line commented out.
 
+Fedora uses SELinux instead of AppArmor and does not have this profile. On a
+default Fedora Workstation install the user runs as `unconfined_t`, which does
+not restrict `perf_event_open` for bwrap children. Skip this step on Fedora.
+
 #### 2. perf_event_paranoid sysctl
 
 ```
@@ -127,7 +131,8 @@ sudo sysctl -p /etc/sysctl.d/10-perf.conf
 ```
 
 **Why:** `rr` requires `perf_event_open`. The default paranoia level on Ubuntu
-(≥3) blocks this for unprivileged processes. Setting it to 1 allows it.
+(≥3) blocks this for unprivileged processes; Fedora defaults to 2, which may
+also be insufficient inside a user namespace. Setting it to 1 allows it.
 
 #### 3. Disable per-repo git hooks on the host (recommended)
 
