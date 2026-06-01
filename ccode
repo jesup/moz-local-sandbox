@@ -168,6 +168,23 @@ if [[ -n "${MOZCONFIG:-}" ]]; then
     args+=(--bind "$MOZCONFIG" "$MOZCONFIG" --setenv MOZCONFIG "$MOZCONFIG")
 fi
 
+if [[ -n "${MOZBUILD_STATE_PATH:-}" ]]; then
+    _mbpath="$(realpath -m "$MOZBUILD_STATE_PATH")"
+    _mapped=false
+    for _prefix in "$HOME/.mozbuild" "$RW_ROOT" "$CWD"; do
+        if [[ "$_mbpath" == "$(realpath -m "$_prefix")"* ]]; then
+            _mapped=true
+            break
+        fi
+    done
+    if [[ "$_mapped" == false ]]; then
+        echo "error: destination of MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH is outside the sandbox." >&2
+        echo "It must be under one of: ~/.mozbuild, $RW_ROOT, or $CWD" >&2
+        exit 1
+    fi
+    args+=(--setenv MOZBUILD_STATE_PATH "$MOZBUILD_STATE_PATH")
+fi
+
 # Forward the ssh-agent socket if one is available on the host. The agent
 # inside the sandbox can use it for signing (e.g. ssh / git push) but cannot
 # read the underlying private keys.
