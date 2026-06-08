@@ -38,6 +38,10 @@ checkouts. Two env vars let you tighten or relocate this:
 - `CCODE_CWD_ONLY=1` — expose **only** the current working directory rw,
   nothing else under `~/src`. Smaller blast radius if the agent goes off the
   rails; the cost is no cross-repo work in that session.
+- `CCODE_EXTRA_BIN_DIR=/path/to/dir` — expose a directory of host binaries
+  inside the sandbox, read-only and prepended to `PATH`. Useful for personal
+  tools in `~/bin` that the agent should be able to invoke. Tilde is expanded
+  so `~/bin/sandbox` works from `.zshenv`.
 
 ### Opening URLs in the host browser
 
