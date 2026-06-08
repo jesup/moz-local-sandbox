@@ -11,14 +11,21 @@ Local sandbox for running Claude Code (`claude`) against a Firefox checkout.
 
 ```
 ccode [claude-args...]
+ccode --exec PROGRAM [args...]
 ```
 
-The script launches `claude --permission-mode bypassPermissions` inside a
-container. `~/src` and state directories are writable; most of the system is
-read-only. Network is shared (needed for `mach`).
+Without `--exec`, the script launches `claude --permission-mode bypassPermissions`
+inside the sandbox. With `--exec`, it runs the given program directly instead —
+useful for a sandboxed shell, `mach`, or any other tool.
 
-`./install.sh` symlinks the OS-appropriate script to `~/bin/ccode`. The
-macOS path also needs the network proxy binary built once: `make build`.
+`~/src` and state directories are writable; most of the system is read-only.
+Network is shared (needed for `mach`).
+
+If `~/.config/claude/mcp-servers.json` or `~/.claude/mcp-servers.json` exists,
+`--mcp-config` is passed automatically so MCP servers (e.g. rr-mcp) are
+available inside the sandbox.
+
+`./install.sh` symlinks the OS-appropriate script to `~/bin/ccode`.
 To install manually, copy or symlink `ccode` (Linux) or `ccode-macos`
 (macOS) somewhere on your `$PATH` and `chmod +x` it.
 
@@ -32,55 +39,28 @@ checkouts. Two env vars let you tighten or relocate this:
   nothing else under `~/src`. Smaller blast radius if the agent goes off the
   rails; the cost is no cross-repo work in that session.
 
-### Network filtering (macOS, opt-in)
+### Opening URLs in the host browser
 
-By default the sandbox shares the host's network namespace and can reach
-anywhere. `CCODE_NETPOLICY=<name>` switches it into a strict-egress mode:
+The sandbox exposes a validated URL opener so the agent can open Bugzilla
+bugs, Phabricator revisions, and localhost dev servers in the host browser.
 
-- The Seatbelt profile becomes `(deny network*)` plus an allow rule for
-  `localhost:<HTTP_PORT>` and `localhost:<SOCKS_PORT>` only. Direct
-  connections to anywhere else die at the kernel.
-- A host-side proxy binary (`bin/ccode-netproxy`, built from `netproxy/`)
-  starts on those two loopback ports: an HTTP CONNECT proxy and a SOCKS5
-  proxy, both filtering by hostname against the named policy's allowlist
-  (with `*.example.com` wildcards).
-- `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY=socks5h://…` / `NO_PROXY` are
-  injected into the sandbox env so curl, git, npm, pip, cargo, Node, and
-  claude itself all route through the proxy without configuration.
+**How it works:** `bin/ccode-open-server` (Python 3, no dependencies) runs
+outside the sandbox and listens on a random loopback port. The in-sandbox
+`xdg-open` (Linux) or `open` (macOS) command is shadowed by `bin/ccode-open`,
+which sends the URL to the host server via loopback. The server re-validates
+and calls `xdg-open` / `/usr/bin/open` on the host. Direct use of the OS open
+mechanism is blocked inside the sandbox (no D-Bus on Linux; LaunchServices
+mach-lookup is denied on macOS), so the host server is the only path.
 
-```
-ccode                              # open network (historical default)
-CCODE_NETPOLICY=anthropic-only ccode
-CCODE_NETPOLICY=anthropic-mozilla ccode
-CCODE_NETPOLICY=/abs/path/to/policy.json ccode
-```
+**Allowed URLs (hardcoded):**
+- `https://bugzilla.mozilla.org/*`
+- `https://phabricator.services.mozilla.com/*`
+- `http(s)://localhost:<any-port>/*`
+- `http(s)://127.0.0.1:<any-port>/*`
 
-Bare names resolve to `policies/<name>.json` inside the repo. Existing
-policies:
-
-| Name                | Reach                                             |
-|---------------------|---------------------------------------------------|
-| `anthropic-only`    | Only `*.anthropic.com`. No git, no npm, no nothing else. |
-| `anthropic-mozilla` | Anthropic + Mozilla services + GitHub + npm + crates.io + PyPI |
-
-Policy file format:
-
-```json
-{
-  "name": "my-policy",
-  "description": "free-form, displayed nowhere yet",
-  "allowedDomains": ["api.anthropic.com", "*.github.com"],
-  "deniedDomains": ["evil.github.com"]
-}
-```
-
-`deniedDomains` is checked first (deny wins). Wildcards (`*.foo.com`)
-match subdomains only — the bare apex `foo.com` needs its own entry.
-
-The proxy does **not** terminate TLS — filtering is at SNI/host-header
-granularity, not at content level. A future iteration may add MITM
-content filtering (per-method allowlists for specific APIs, request
-inspection, etc.) layered on the same proxy.
+Everything else is blocked at the host listener. The agent cannot bypass
+this by modifying `bin/ccode-open` — the host listener validates
+independently.
 
 ### Host-side noexec (macOS, opt-in)
 
@@ -89,10 +69,9 @@ writable tree: any file that gained the execute bit during the sandbox
 session has it stripped when the sandbox exits. Files that were already
 executable before launch are left alone (mtime-based diff).
 
-This is the macOS equivalent of sandtool's `MS_NOEXEC` bind-mount trick.
-On Linux, a separate mount-namespace lets the host see the workdir as
-non-executable while the sandbox sees it executable; on macOS, with no
-mount namespaces, the only option is to detect-and-strip on exit.
+On Linux you can achieve the same effect with an `MS_NOEXEC` bind mount
+inside the user namespace; on macOS there are no mount namespaces, so
+detect-and-strip on exit is the only option. `CCODE_NOEXEC` is macOS-only.
 
 Restore with `chmod +x <file>` on the host. There is no automatic restore.
 
@@ -178,10 +157,12 @@ should succeed, ones that should be denied, and confirms the script's
 |------|--------|---------|
 | `/usr`, `/lib`, `/lib64`, `/bin` | ro | system binaries/libs |
 | `/etc/{resolv.conf,hosts,ssl,passwd,group}` | ro | network + auth |
-| `/etc/alternatives/cc` | ro | default C compiler symlink (Ubuntu/Debian; skipped if absent) |
+| `/etc/alternatives` | ro | compiler/tool alternative symlinks (Ubuntu/Debian; skipped if absent) |
+| `/etc/ld.so.{cache,conf,conf.d}` | ro | dynamic linker config (skipped if absent) |
 | `~/.config/claude`, `~/.local/share/claude` | ro | Claude config/data |
 | `~/.config/gh`, `~/.config/jj` | ro | VCS credentials |
-| `~/.gitconfig`, `~/.arcrc`, `~/.moz-phab-config` | ro/rw | VCS config |
+| `~/.gitconfig`, `~/.arcrc` | ro | VCS config |
+| `~/.moz-phab-config` | rw | moz-phab config |
 | `~/.nvm`, `~/.local/bin` | ro | Node, local tools |
 | `~/.rustup` | ro | rust toolchains (use only) |
 | `~/.cargo/bin` → `/opt/cargo-host/bin` | ro | host-installed cargo tools (jj, bat, …) |
@@ -192,6 +173,7 @@ should succeed, ones that should be denied, and confirms the script's
 | `~/.local/share/rr` | rw | rr traces |
 | `~/.mozbuild` | rw | mach build artifacts |
 | `~/.sandbox/{cargo,uv,npm,npm-prefix,pip,go}` (mounted at canonical paths) | rw | sandbox-only language toolchain caches; `npm-prefix/bin` is on `PATH` for `npm i -g` |
+| `/opt/ccode-bin/xdg-open` (bind of `bin/ccode-open`) | ro | validated URL opener; shadows system `xdg-open` |
 
 ### macOS (`sandbox-exec`)
 
@@ -228,12 +210,6 @@ other apps via AppleEvents. Note that on modern macOS, AppleEvent
 delivery is gated by TCC rather than mach-lookup, so the AppleEvents deny
 is best-effort; rely on TCC consent (System Settings → Privacy & Security
 → Automation) as the real defence.
-
-Exfiltration via Claude Code's `WebFetch` / `WebSearch` tools (which
-tunnel through the Anthropic API and so bypass any host-side network
-filter) is mitigated by the `CCODE_NETPOLICY` netproxy — the proxy is
-the single chokepoint for all egress, and Anthropic is on the allowlist
-(or not) at the network level.
 
 ### Environment forwarding
 
@@ -286,8 +262,7 @@ of:
   was tried and removed: Claude Code on macOS spreads login state
   across `~/.claude/`, `~/.claude.json`, and the keychain, and isolating
   any one of them broke login UX even with a token forwarded via env
-  var. The acceptable mitigation is the netproxy: a poisoned hook can
-  only reach hosts on the netpolicy allowlist.
+  var. Network egress filtering is the real mitigation.
 
 - **rustup `~/.rustup` is shared read-only.** A compromised agent cannot
   modify the host toolchain, but cannot install new toolchains either —
@@ -317,22 +292,3 @@ of:
   than sandbox-exec on modern macOS; the deny rule is a tripwire, not a
   guarantee.
 
-- **macOS network filter is host-name granularity.** With
-  `CCODE_NETPOLICY` set, the proxy filters at the TLS SNI / HTTP Host
-  header (which is what almost everything checks against the allowlist).
-  It does not terminate TLS, so:
-   - **Domain fronting** through an allowlisted CDN-shared origin is
-     possible. If you allow `*.cloudflare.com`, traffic could hit any
-     other Cloudflare-fronted service. Allowlisting specific apex
-     domains rather than wildcarded CDNs mitigates.
-   - **DNS over HTTPS** to an allowlisted resolver bypasses the
-     intended target check — the resolver host is the only host we
-     filter, the content of the DoH request is not inspected.
-   - **No content filtering**: a process that's allowed to talk to
-     `api.anthropic.com` can do anything that endpoint accepts.
-   - **WebFetch / WebSearch** tunnel through the Anthropic API, so the
-     netproxy only sees them if it sees Anthropic. Either keep them out
-     of the policy allowlist, or add a project-level `.claude/
-     settings.json` deny manually.
-  These are inherent to a non-MITM proxy. Adding MITM mode for
-  per-method/per-path filtering is a planned future iteration.
