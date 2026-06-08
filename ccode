@@ -12,6 +12,18 @@
 
 set -euo pipefail
 
+# Resolve the script's own location through any symlinks (install.sh
+# symlinks this file as ~/bin/ccode). We need the real repository path
+# to find the open-server script alongside the script.
+_self="$0"
+while [[ -L "$_self" ]]; do
+    _link="$(readlink "$_self")"
+    if [[ "$_link" = /* ]]; then _self="$_link"
+    else _self="$(cd "$(dirname "$_self")" && pwd)/$_link"
+    fi
+done
+REPO_DIR="$(cd "$(dirname "$_self")" && pwd)"
+
 # Source tree exposed read-write to the sandbox. Override with CCODE_SRC if
 # your checkouts live elsewhere. Set CCODE_CWD_ONLY=1 to expose only the
 # current working directory instead of the whole tree — tighter blast radius
@@ -40,6 +52,34 @@ mkdir -p \
     "$SBX/go" \
     "$SBX/empty-hooks"
 
+# Start the open server. bin/ccode-open-server is a Python script that
+# listens on a random loopback port, validates URLs against a hardcoded
+# allowlist, and calls xdg-open on the host. The in-sandbox xdg-open
+# wrapper at /opt/ccode-bin/xdg-open talks to it via loopback (--share-net).
+OPEN_PORT=""
+_OPEN_SERVER="$REPO_DIR/bin/ccode-open-server"
+if [[ -f "$_OPEN_SERVER" ]]; then
+    _OPEN_STATUS="$SBX/open-server-status-$$"
+    _OPEN_LOG="$SBX/open-server.log"
+    python3 "$_OPEN_SERVER" > "$_OPEN_STATUS" 2>"$_OPEN_LOG" &
+    _OPEN_PID=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        if [[ -s "$_OPEN_STATUS" ]]; then break; fi
+        if ! kill -0 "$_OPEN_PID" 2>/dev/null; then
+            echo "ccode: open server failed to start (see $_OPEN_LOG)" >&2
+            break
+        fi
+        sleep 0.2
+    done
+    _line=""
+    read -r _line < "$_OPEN_STATUS" 2>/dev/null || true
+    rm -f "$_OPEN_STATUS"
+    if [[ "$_line" =~ OPEN_PORT=([0-9]+) ]]; then
+        OPEN_PORT="${BASH_REMATCH[1]}"
+        echo "ccode: open server started (port=$OPEN_PORT)" >&2
+    fi
+fi
+
 # Build the bwrap argv as an array. Bash does not allow `# comment` lines
 # between `\`-continued lines, so the previous form silently broke the command
 # into separate one-token invocations of bwrap. Use an array instead.
@@ -56,7 +96,10 @@ args=(
     # ssl: CA bundle for HTTPS.
     # passwd, group: uid/gid -> name resolution.
     --ro-bind /etc/resolv.conf      /etc/resolv.conf
-    --ro-bind-try /etc/alternatives/cc  /etc/alternatives/cc  # absent on Fedora and newer distros
+    --ro-bind-try /etc/alternatives /etc/alternatives  # absent on Fedora and newer distros
+    --ro-bind-try /etc/ld.so.cache  /etc/ld.so.cache
+    --ro-bind-try /etc/ld.so.conf   /etc/ld.so.conf
+    --ro-bind-try /etc/ld.so.conf.d /etc/ld.so.conf.d
     --ro-bind /etc/hosts            /etc/hosts
     --ro-bind-try /etc/ssl          /etc/ssl
     --ro-bind-try /etc/pki          /etc/pki
@@ -115,6 +158,7 @@ args=(
     --tmpfs /tmp
     --proc  /proc
     --dev   /dev
+    --dir   /opt/ccode-bin
 
     # --clearenv drops everything from the host environment so secrets
     # (AWS_*, OPENAI_API_KEY, anonymous tokens, etc.) cannot leak into the
@@ -126,7 +170,7 @@ args=(
     --setenv SHELL   "${SHELL:-/bin/bash}"
     --setenv TERM    "${TERM:-xterm-256color}"
     --setenv LANG    "${LANG:-C.UTF-8}"
-    --setenv PATH    "$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/cargo-host/bin:/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    --setenv PATH    "$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/ccode-bin:/opt/cargo-host/bin:/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
     # Point npm/pip/go at sandbox-only caches. cargo and uv use their default
     # locations, which are already mounted to the sandbox dirs above.
@@ -199,6 +243,13 @@ if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
     )
 fi
 
+if [[ -n "$OPEN_PORT" ]]; then
+    args+=(
+        --ro-bind "$REPO_DIR/bin/ccode-open" /opt/ccode-bin/xdg-open
+        --setenv  CCODE_OPEN_PORT             "$OPEN_PORT"
+    )
+fi
+
 args+=(
 
     # --- Namespace configuration ---
@@ -232,8 +283,15 @@ for _candidate in "$HOME/.config/claude/mcp-servers.json" "$HOME/.claude/mcp-ser
     fi
 done
 
-exec bwrap "${args[@]}" \
-    "$(command -v claude)" \
-    --permission-mode bypassPermissions \
-    ${MCP_CONFIG:+--mcp-config "$MCP_CONFIG"} \
-    "$@"
+trap '[[ -n "${_OPEN_PID:-}" ]] && kill "$_OPEN_PID" 2>/dev/null; true' EXIT
+
+if [[ "${1:-}" == "--exec" ]]; then
+    shift
+    bwrap "${args[@]}" "$@"
+else
+    bwrap "${args[@]}" \
+        "$(command -v claude)" \
+        --permission-mode bypassPermissions \
+        ${MCP_CONFIG:+--mcp-config "$MCP_CONFIG"} \
+        "$@"
+fi

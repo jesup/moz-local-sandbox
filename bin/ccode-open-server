@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""
+Host-side URL open server for the ccode sandbox.
+
+Listens on a random loopback port, validates URLs against a hardcoded
+allowlist, and calls the host URL opener. The in-sandbox wrapper
+(bin/ccode-open) sends requests here via loopback — the only path from
+inside the sandbox to the host desktop.
+
+Prints OPEN_PORT=<n> to stdout when ready.
+"""
+import http.server
+import platform
+import subprocess
+import sys
+import urllib.parse
+
+
+HTTPS_ONLY = {"bugzilla.mozilla.org", "phabricator.services.mozilla.com"}
+LOOPBACK = {"localhost", "127.0.0.1"}
+
+
+def allowed(url):
+    try:
+        p = urllib.parse.urlparse(url)
+        scheme = p.scheme.lower()
+        host = (p.hostname or "").lower()
+        if scheme not in ("http", "https"):
+            return False
+        if host in HTTPS_ONLY:
+            return scheme == "https"
+        return host in LOOPBACK
+    except Exception:
+        return False
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        url = params.get("url", [""])[0]
+        if not allowed(url):
+            print(f"DENY OPEN {url}", file=sys.stderr)
+            self.send_response(403)
+            self.end_headers()
+            return
+        print(f"OPEN {url}", file=sys.stderr)
+        opener = "/usr/bin/open" if platform.system() == "Darwin" else "/usr/bin/xdg-open"
+        subprocess.Popen([opener, url])
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+port = server.server_address[1]
+print(f"OPEN_PORT={port}", flush=True)
+server.serve_forever()

@@ -1,0 +1,22 @@
+#!/bin/bash
+# ccode-open — validated URL opener for the ccode sandbox.
+# Sends the URL to the host-side open server via loopback.
+# The server re-validates and calls the host URL opener.
+# This is the only path from inside the sandbox to the host desktop.
+URL="${1:-}"
+if [[ -z "$URL" ]]; then
+    echo "usage: $(basename "$0") <url>" >&2
+    exit 1
+fi
+if [[ -z "${CCODE_OPEN_PORT:-}" ]]; then
+    echo "ccode-open: CCODE_OPEN_PORT not set (open server not running)" >&2
+    exit 1
+fi
+# Client-side validation for a clear error message. The host server
+# re-validates independently — this check can be bypassed without effect.
+if [[ "$URL" =~ ^https://(bugzilla\.mozilla\.org|phabricator\.services\.mozilla\.com)(/.*)?$ ]] ||
+   [[ "$URL" =~ ^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?(/.*)?$ ]]; then
+    exec curl -sfG --data-urlencode "url=$URL" "http://127.0.0.1:${CCODE_OPEN_PORT}/open"
+fi
+echo "ccode-open: blocked: $URL" >&2
+exit 1

@@ -19,7 +19,7 @@ set -euo pipefail
 
 # Resolve the script's own location through any symlinks (install.sh
 # symlinks this file as ~/bin/ccode). We need the real repository path
-# to find the netproxy binary and policy files alongside the script.
+# to find the open-server script alongside the script.
 _self="$0"
 while [[ -L "$_self" ]]; do
     _link="$(readlink "$_self")"
@@ -63,100 +63,35 @@ mkdir -p \
 # shared-state residual risk (see README) is preferable to a broken
 # login UX.
 
-# Network policy (opt-in). When CCODE_NETPOLICY is set, a host-side proxy
-# is started and the sandbox profile is locked down to only let traffic
-# reach those proxy ports on loopback. Without it, the sandbox has open
-# network egress (the historical default).
-#
-# CCODE_NETPOLICY can be either a bare name (resolved against
-# $REPO_DIR/policies/<name>.json) or an absolute path to a JSON file.
-#
-# The proxy is a single Go binary (netproxy/) that runs an HTTP CONNECT
-# proxy plus a SOCKS5 proxy in parallel, both filtering by host against
-# the policy's allowlist. Egress filtering happens at the OS level
-# (sandbox profile blocks anything off-loopback) AND at the proxy
-# (allowlist rejects unknown hosts before dialling upstream).
-NETPROXY_HTTP_PORT=""
-NETPROXY_SOCKS_PORT=""
-NETPROXY_PID=""
-NETPROXY_POLICY_PATH=""
+# Start the open server. bin/ccode-open-server is a Python script that
+# listens on a random loopback port, validates URLs against a hardcoded
+# allowlist, and calls /usr/bin/open on the host. The in-sandbox `open`
+# command (bin/open, earlier on PATH than /usr/bin/open) sends requests
+# here via loopback.
+OPEN_PORT=""
+OPEN_SERVER_PID=""
+_OPEN_SERVER="$REPO_DIR/bin/ccode-open-server"
 
-if [[ -n "${CCODE_NETPOLICY:-}" ]]; then
-    if [[ "$CCODE_NETPOLICY" = /* ]]; then
-        NETPROXY_POLICY_PATH="$CCODE_NETPOLICY"
-    else
-        NETPROXY_POLICY_PATH="$REPO_DIR/policies/${CCODE_NETPOLICY}.json"
-    fi
-    if [[ ! -f "$NETPROXY_POLICY_PATH" ]]; then
-        echo "ccode: policy not found: $NETPROXY_POLICY_PATH" >&2
-        echo "ccode: available policies:" >&2
-        ls "$REPO_DIR/policies/" 2>/dev/null | sed 's/\.json$//' | sed 's/^/  - /' >&2
-        exit 1
-    fi
-
-    NETPROXY_BIN="$REPO_DIR/bin/ccode-netproxy"
-    if [[ ! -x "$NETPROXY_BIN" ]]; then
-        echo "ccode: $NETPROXY_BIN not built. Run \`make\` in $REPO_DIR first." >&2
-        exit 1
-    fi
-
-    # --print-profile must not actually start the proxy; use sentinel
-    # placeholders so the printed profile still shows the structure.
-    if [[ "${1:-}" == "--print-profile" ]]; then
-        NETPROXY_HTTP_PORT="<HTTP_PORT>"
-        NETPROXY_SOCKS_PORT="<SOCKS_PORT>"
-    else
-        NETPROXY_STATUS="$SBX/netproxy-status-$$"
-        NETPROXY_LOG="$SBX/netproxy.log"
-        "$NETPROXY_BIN" --policy "$NETPROXY_POLICY_PATH" \
-            > "$NETPROXY_STATUS" 2> "$NETPROXY_LOG" &
-        NETPROXY_PID=$!
-        # Wait up to ~3s for the proxy to write its status line.
-        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-            if [[ -s "$NETPROXY_STATUS" ]] && \
-               grep -q '^HTTP_PORT=' "$NETPROXY_STATUS"; then
-                break
-            fi
-            if ! kill -0 "$NETPROXY_PID" 2>/dev/null; then
-                echo "ccode: netproxy died on startup. Log ($NETPROXY_LOG):" >&2
-                cat "$NETPROXY_LOG" >&2
-                exit 1
-            fi
-            sleep 0.2
-        done
-        line=""
-        read -r line < "$NETPROXY_STATUS" 2>/dev/null || true
-        if [[ "$line" =~ HTTP_PORT=([0-9]+) ]]; then
-            NETPROXY_HTTP_PORT="${BASH_REMATCH[1]}"
+if [[ "${1:-}" != "--print-profile" ]] && [[ -f "$_OPEN_SERVER" ]]; then
+    _OPEN_STATUS="$SBX/open-server-status-$$"
+    _OPEN_LOG="$SBX/open-server.log"
+    python3 "$_OPEN_SERVER" > "$_OPEN_STATUS" 2>"$_OPEN_LOG" &
+    OPEN_SERVER_PID=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        if [[ -s "$_OPEN_STATUS" ]]; then break; fi
+        if ! kill -0 "$OPEN_SERVER_PID" 2>/dev/null; then
+            echo "ccode: open server failed to start (see $_OPEN_LOG)" >&2
+            break
         fi
-        if [[ "$line" =~ SOCKS_PORT=([0-9]+) ]]; then
-            NETPROXY_SOCKS_PORT="${BASH_REMATCH[1]}"
-        fi
-        rm -f "$NETPROXY_STATUS"
-        if [[ -z "$NETPROXY_HTTP_PORT" || -z "$NETPROXY_SOCKS_PORT" ]]; then
-            echo "ccode: netproxy did not report ports. Log ($NETPROXY_LOG):" >&2
-            cat "$NETPROXY_LOG" >&2
-            kill "$NETPROXY_PID" 2>/dev/null || true
-            exit 1
-        fi
-        echo "ccode: netproxy started (policy=$CCODE_NETPOLICY http=$NETPROXY_HTTP_PORT socks=$NETPROXY_SOCKS_PORT)" >&2
+        sleep 0.2
+    done
+    _line=""
+    read -r _line < "$_OPEN_STATUS" 2>/dev/null || true
+    rm -f "$_OPEN_STATUS"
+    if [[ "$_line" =~ OPEN_PORT=([0-9]+) ]]; then
+        OPEN_PORT="${BASH_REMATCH[1]}"
+        echo "ccode: open server started (port=$OPEN_PORT)" >&2
     fi
-fi
-
-# Compose the network section of the profile. Without a policy, allow
-# everything (historical default). With one, lock down to only the
-# loopback proxy ports — every other destination is dropped by the kernel
-# before it can reach a syscall.
-if [[ -n "$NETPROXY_HTTP_PORT" ]]; then
-    PROFILE_NETWORK="(deny network*)
-;; Only the loopback netproxy ports are reachable. The sandbox client
-;; (claude, curl, git, npm, …) uses HTTP_PROXY / HTTPS_PROXY / ALL_PROXY
-;; env vars to route egress through the proxy, which then enforces the
-;; allowlist policy and dials upstream.
-(allow network-outbound (remote ip \"localhost:$NETPROXY_HTTP_PORT\"))
-(allow network-outbound (remote ip \"localhost:$NETPROXY_SOCKS_PORT\"))"
-else
-    PROFILE_NETWORK="(allow network*)"
 fi
 
 # Build the sandbox profile (SBPL). $HOME / $RW_ROOT / $SBX are interpolated
@@ -198,7 +133,9 @@ PROFILE=$(cat <<SBPROFILE
   (global-name "com.apple.usernotifications.usernotificationservice")
   (global-name "com.apple.usernotifications.delegate")
   (global-name "com.apple.NotificationCenterAgent")
-  (global-name "com.apple.distributed_notifications.2"))
+  (global-name "com.apple.distributed_notifications.2")
+  (global-name "com.apple.launchservicesd")
+  (global-name "com.apple.coreservices.launchservicesd"))
 (allow mach-priv-host-port)
 (allow ipc-posix-shm*)
 (allow ipc-posix-sem*)
@@ -212,11 +149,10 @@ PROFILE=$(cat <<SBPROFILE
 (allow file-read-metadata)
 
 ;; --- Network ---
-$PROFILE_NETWORK
+(allow network*)
 
-;; Loopback and Unix domain sockets cannot leave the host, so they are
-;; exempt from egress policy. These rules come after \$PROFILE_NETWORK and
-;; override any (deny network*) set by CCODE_NETPOLICY via last-match-wins.
+;; Loopback and Unix domain sockets are always explicitly allowed (needed
+;; for Marionette and the ccode open server on localhost).
 ;;
 ;; Needed for Marionette (Firefox remote control): the agent starts Firefox
 ;; with --marionette, Firefox binds a TCP port on localhost, and the agent
@@ -303,8 +239,6 @@ $PROFILE_NETWORK
 ;; --- Read-write paths ---
 ;; ~/.claude and ~/.claude.json are rw-shared with host. A compromised
 ;; sandbox can edit settings, hooks, skills or MCP entries that the host
-;; claude would later execute. The real exfil defence is the netproxy
-;; (CCODE_NETPOLICY), not in-app file isolation.
 (allow file-read* file-write*
   (literal "$HOME/.moz-phab-config")
   (subpath "$RW_ROOT")
@@ -323,6 +257,7 @@ if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
     PROFILE+=$'\n'"(allow file-read* file-write* network-outbound (literal \"$SSH_AUTH_SOCK\"))"
 fi
 
+
 # Build the env passed into the sandbox. env -i clears the host environment
 # so secrets (AWS_*, OPENAI_API_KEY, etc.) cannot leak in. We re-introduce
 # only what the sandbox needs.
@@ -335,7 +270,7 @@ ENV_ARGS=(
     LANG="${LANG:-en_US.UTF-8}"
     # Sandbox-installed cargo bin first, then host cargo bin (read-only,
     # provides the rustup-managed `cargo`/`rustc` shims), then the rest.
-    PATH="$SBX/cargo/bin:$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+    PATH="$SBX/cargo/bin:$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:$REPO_DIR/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
 
     # Toolchain caches redirected to sandbox-private locations.
     NPM_CONFIG_CACHE="$SBX/npm"
@@ -415,26 +350,7 @@ fi
 if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
     ENV_ARGS+=(SSH_AUTH_SOCK="$SSH_AUTH_SOCK")
 fi
-
-# When the netproxy is running, point the sandbox's HTTP and TCP clients
-# at it. Tools that respect HTTP_PROXY/HTTPS_PROXY (curl, git, npm, pip,
-# Node's http/https, Python requests, cargo, gh, claude itself) route via
-# the HTTP CONNECT proxy. ALL_PROXY=socks5h://... catches anything that
-# speaks SOCKS5 (notably ssh with -o ProxyCommand or recent gh versions
-# for SSH-mode git). NO_PROXY excludes loopback so direct connections to
-# the proxy itself don't loop infinitely.
-if [[ -n "$NETPROXY_HTTP_PORT" && "$NETPROXY_HTTP_PORT" != "<HTTP_PORT>" ]]; then
-    ENV_ARGS+=(
-        HTTP_PROXY="http://127.0.0.1:$NETPROXY_HTTP_PORT"
-        HTTPS_PROXY="http://127.0.0.1:$NETPROXY_HTTP_PORT"
-        http_proxy="http://127.0.0.1:$NETPROXY_HTTP_PORT"
-        https_proxy="http://127.0.0.1:$NETPROXY_HTTP_PORT"
-        ALL_PROXY="socks5h://127.0.0.1:$NETPROXY_SOCKS_PORT"
-        all_proxy="socks5h://127.0.0.1:$NETPROXY_SOCKS_PORT"
-        NO_PROXY="localhost,127.0.0.1,::1"
-        no_proxy="localhost,127.0.0.1,::1"
-    )
-fi
+[[ -n "$OPEN_PORT" ]] && ENV_ARGS+=(CCODE_OPEN_PORT="$OPEN_PORT")
 
 # Debug helper: print the assembled profile and exit. Used by the test suite
 # and useful for inspecting what the sandbox actually allows on this host.
@@ -456,14 +372,8 @@ if [[ "${CCODE_NOEXEC:-0}" == "1" ]]; then
 fi
 
 cleanup() {
-    if [[ -n "$NETPROXY_PID" ]] && kill -0 "$NETPROXY_PID" 2>/dev/null; then
-        kill "$NETPROXY_PID" 2>/dev/null || true
-        # Give it a moment to flush logs cleanly; SIGKILL if it hangs.
-        for _ in 1 2 3 4 5; do
-            kill -0 "$NETPROXY_PID" 2>/dev/null || break
-            sleep 0.1
-        done
-        kill -9 "$NETPROXY_PID" 2>/dev/null || true
+    if [[ -n "$OPEN_SERVER_PID" ]] && kill -0 "$OPEN_SERVER_PID" 2>/dev/null; then
+        kill "$OPEN_SERVER_PID" 2>/dev/null || true
     fi
     if [[ -n "$NOEXEC_MARKER" && -f "$NOEXEC_MARKER" ]]; then
         # find: files newer than the marker that currently have any x bit set,
@@ -500,8 +410,13 @@ done
 # sandbox exits. Bash sits between the controlling TTY and the sandboxed
 # process; signal forwarding for foreground process groups (Ctrl+C in the
 # TUI) still works normally.
-env -i "${ENV_ARGS[@]}" \
-    sandbox-exec -p "$PROFILE" \
-    "$(command -v claude)" \
-    "${CLAUDE_ARGS[@]}" \
-    "$@"
+if [[ "${1:-}" == "--exec" ]]; then
+    shift
+    env -i "${ENV_ARGS[@]}" sandbox-exec -p "$PROFILE" "$@"
+else
+    env -i "${ENV_ARGS[@]}" \
+        sandbox-exec -p "$PROFILE" \
+        "$(command -v claude)" \
+        "${CLAUDE_ARGS[@]}" \
+        "$@"
+fi
