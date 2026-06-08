@@ -80,6 +80,13 @@ if [[ -f "$_OPEN_SERVER" ]]; then
     fi
 fi
 
+if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then
+    CCODE_EXTRA_BIN_DIR="${CCODE_EXTRA_BIN_DIR/#\~/$HOME}"
+    [[ -d "$CCODE_EXTRA_BIN_DIR" ]] || { echo "ccode: CCODE_EXTRA_BIN_DIR=$CCODE_EXTRA_BIN_DIR: not a directory" >&2; exit 1; }
+fi
+_SANDBOX_PATH="$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/ccode-bin:/opt/cargo-host/bin:/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+[[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]] && _SANDBOX_PATH="${CCODE_EXTRA_BIN_DIR}:${_SANDBOX_PATH}"
+
 # Build the bwrap argv as an array. Bash does not allow `# comment` lines
 # between `\`-continued lines, so the previous form silently broke the command
 # into separate one-token invocations of bwrap. Use an array instead.
@@ -170,7 +177,7 @@ args=(
     --setenv SHELL   "${SHELL:-/bin/bash}"
     --setenv TERM    "${TERM:-xterm-256color}"
     --setenv LANG    "${LANG:-C.UTF-8}"
-    --setenv PATH    "$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/ccode-bin:/opt/cargo-host/bin:/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    --setenv PATH    "$_SANDBOX_PATH"
 
     # Point npm/pip/go at sandbox-only caches. cargo and uv use their default
     # locations, which are already mounted to the sandbox dirs above.
@@ -241,6 +248,10 @@ if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
         --ro-bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK"
         --setenv  SSH_AUTH_SOCK    "$SSH_AUTH_SOCK"
     )
+fi
+
+if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then
+    args+=(--ro-bind "$CCODE_EXTRA_BIN_DIR" "$CCODE_EXTRA_BIN_DIR")
 fi
 
 if [[ -n "$OPEN_PORT" ]]; then

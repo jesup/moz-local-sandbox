@@ -94,6 +94,13 @@ if [[ "${1:-}" != "--print-profile" ]] && [[ -f "$_OPEN_SERVER" ]]; then
     fi
 fi
 
+if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then
+    CCODE_EXTRA_BIN_DIR="${CCODE_EXTRA_BIN_DIR/#\~/$HOME}"
+    [[ -d "$CCODE_EXTRA_BIN_DIR" ]] || { echo "ccode: CCODE_EXTRA_BIN_DIR=$CCODE_EXTRA_BIN_DIR: not a directory" >&2; exit 1; }
+fi
+_SANDBOX_PATH="$SBX/cargo/bin:$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:$REPO_DIR/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+[[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]] && _SANDBOX_PATH="${CCODE_EXTRA_BIN_DIR}:${_SANDBOX_PATH}"
+
 # Build the sandbox profile (SBPL). $HOME / $RW_ROOT / $SBX are interpolated
 # by the shell into Scheme string literals — assumes paths contain no `"' or
 # `\' (true for normal Unix paths).
@@ -256,6 +263,9 @@ SBPROFILE
 if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
     PROFILE+=$'\n'"(allow file-read* file-write* network-outbound (literal \"$SSH_AUTH_SOCK\"))"
 fi
+if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then
+    PROFILE+=$'\n'"(allow file-read* (subpath \"$CCODE_EXTRA_BIN_DIR\"))"
+fi
 
 
 # Build the env passed into the sandbox. env -i clears the host environment
@@ -270,7 +280,7 @@ ENV_ARGS=(
     LANG="${LANG:-en_US.UTF-8}"
     # Sandbox-installed cargo bin first, then host cargo bin (read-only,
     # provides the rustup-managed `cargo`/`rustc` shims), then the rest.
-    PATH="$SBX/cargo/bin:$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:$REPO_DIR/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+    PATH="$_SANDBOX_PATH"
 
     # Toolchain caches redirected to sandbox-private locations.
     NPM_CONFIG_CACHE="$SBX/npm"
