@@ -72,7 +72,7 @@ args=(
     --ro-bind "$HOME/.local/bin"             "$HOME/.local/bin"
     --ro-bind "$HOME/.local/share/claude"    "$HOME/.local/share/claude"
     --ro-bind "$HOME/.arcrc"                 "$HOME/.arcrc"
-    --ro-bind "$HOME/.config/gh"             "$HOME/.config/gh"
+    --ro-bind-try "$HOME/.config/gh"             "$HOME/.config/gh"
     --ro-bind-try "$HOME/.config/claude"     "$HOME/.config/claude"  # may not exist; mcp-servers.json searched explicitly below
     --ro-bind "$HOME/.config/jj"             "$HOME/.config/jj"
 
