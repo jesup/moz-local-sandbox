@@ -118,6 +118,7 @@ PROFILE=$(cat <<SBPROFILE
 (allow signal (target self))
 (allow signal (target children))
 (allow sysctl-read)
+(allow system-sched (target self))
 
 ;; Mach services. Most system frameworks require mach-lookup to start, so
 ;; we allow it broadly — but deny a hand-picked list of user-facing
