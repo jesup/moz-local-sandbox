@@ -144,6 +144,10 @@ PROFILE=$(cat <<SBPROFILE
   (global-name "com.apple.launchservicesd")
   (global-name "com.apple.coreservices.launchservicesd"))
 (allow mach-priv-host-port)
+;; task_for_pid — lets lldb/debugserver get the task port of a target process.
+(allow mach-priv-task-port)
+;; system-debug — gates ptrace(PT_ATTACHEXC); needed for lldb process attach.
+(allow system-debug)
 (allow ipc-posix-shm*)
 (allow ipc-posix-sem*)
 
@@ -154,6 +158,9 @@ PROFILE=$(cat <<SBPROFILE
 
 ;; Stat any path (needed for traversal). Leaks file existence, not contents.
 (allow file-read-metadata)
+
+;; mmap with PROT_EXEC — needed for lldb to map the target binary and dylibs.
+(allow file-map-executable)
 
 ;; --- Network ---
 (allow network*)
@@ -242,6 +249,16 @@ PROFILE=$(cat <<SBPROFILE
   (subpath "/Library/Keychains")
   (subpath "/private/var/db/SystemKey")
   (subpath "/private/var/db/mds"))
+
+;; ~/Library/Caches — scoped to lldb/debugger paths so the sandbox can
+;; read and write symbol caches during a debug session.  True isolation
+;; (redirecting writes to \$SBX) is not possible on macOS without bind
+;; mounts; this is the narrowest grant that covers known lldb needs.
+;; ~/Library/Developer is needed for debugserver and device support symbols.
+(allow file-read* file-write*
+  (subpath "$HOME/Library/Caches/com.apple.dt.lldb")
+  (subpath "$HOME/Library/Caches/com.apple.symbols")
+  (subpath "$HOME/Library/Developer"))
 
 ;; --- Read-write paths ---
 ;; ~/.claude and ~/.claude.json are rw-shared with host. A compromised
