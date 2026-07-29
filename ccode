@@ -126,6 +126,18 @@ args=(
     --ro-bind-try "$HOME/.config/claude"     "$HOME/.config/claude"  # may not exist; mcp-servers.json searched explicitly below
     --ro-bind "$HOME/.config/jj"             "$HOME/.config/jj"
 
+    # Shell rc/profile files: the Bash tool spawns $SHELL to run commands,
+    # which sources these on startup. Cover both bash and zsh regardless of
+    # which is $SHELL, since either may still be invoked interactively.
+    --ro-bind-try "$HOME/.bashrc"             "$HOME/.bashrc"
+    --ro-bind-try "$HOME/.bash_profile"       "$HOME/.bash_profile"
+    --ro-bind-try "$HOME/.bash_login"         "$HOME/.bash_login"
+    --ro-bind-try "$HOME/.profile"            "$HOME/.profile"
+    --ro-bind-try "$HOME/.zshrc"              "$HOME/.zshrc"
+    --ro-bind-try "$HOME/.zprofile"           "$HOME/.zprofile"
+    --ro-bind-try "$HOME/.zshenv"             "$HOME/.zshenv"
+    --ro-bind-try "$HOME/.zlogin"             "$HOME/.zlogin"
+
     # ~/.ssh is intentionally NOT bound. Read access to private keys lets a
     # compromised agent exfiltrate them over the (shared) network. Instead
     # forward only the ssh-agent socket and known_hosts/config below: the
@@ -209,8 +221,11 @@ if _GH_TOKEN=$(gh auth token 2>/dev/null) && [[ -n "$_GH_TOKEN" ]]; then
     args+=(--setenv GH_TOKEN "$_GH_TOKEN")
 fi
 
-[[ -n "${PHABRICATOR_TOKEN:-}" ]] && args+=(--setenv PHABRICATOR_TOKEN "$PHABRICATOR_TOKEN")
-[[ -n "${BMO_API_KEY:-}" ]]       && args+=(--setenv BMO_API_KEY       "$BMO_API_KEY")
+[[ -n "${PHABRICATOR_TOKEN:-}" ]]    && args+=(--setenv PHABRICATOR_TOKEN    "$PHABRICATOR_TOKEN")
+[[ -n "${BMO_API_KEY:-}" ]]         && args+=(--setenv BMO_API_KEY         "$BMO_API_KEY")
+[[ -n "${CARGO_REGISTRY_TOKEN:-}" ]] && args+=(--setenv CARGO_REGISTRY_TOKEN "$CARGO_REGISTRY_TOKEN")
+[[ -n "${MATURIN_PYPI_TOKEN:-}" ]]   && args+=(--setenv MATURIN_PYPI_TOKEN   "$MATURIN_PYPI_TOKEN")
+[[ -n "${UV_PUBLISH_TOKEN:-}" ]]     && args+=(--setenv UV_PUBLISH_TOKEN     "$UV_PUBLISH_TOKEN")
 # MOZCONFIG points to a directory that may contain executables (compilers,
 # build tools, wrappers). Like the sandbox-private toolchain caches, a
 # compromised agent could drop malicious binaries here for the host to pick

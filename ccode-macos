@@ -53,6 +53,7 @@ mkdir -p \
     "$SBX/npm-prefix" \
     "$SBX/pip" \
     "$SBX/go" \
+    "$SBX/tmp" \
     "$SBX/empty-hooks"
 
 # ~/.claude is shared rw with the host (re-exposed below). We had it
@@ -202,9 +203,12 @@ PROFILE=$(cat <<SBPROFILE
 (allow file-read* file-write*
   (subpath "/dev"))
 
-;; tmp dirs — writable.
+;; tmp dirs — writable. /var/tmp is a symlink to /private/var/tmp; the
+;; kernel checks the resolved path, so it needs its own rule (e.g. gmake
+;; jobserver mkfifo under /var/tmp fails with just /private/tmp granted).
 (allow file-read* file-write*
   (subpath "/private/tmp")
+  (subpath "/private/var/tmp")
   (subpath "/private/var/folders"))
 
 ;; --- Read-only user config and credentials ---
@@ -214,6 +218,17 @@ PROFILE=$(cat <<SBPROFILE
 (allow file-read*
   (literal "$HOME/.gitconfig")
   (literal "$HOME/.arcrc")
+  ;; Shell rc/profile files: the Bash tool spawns \$SHELL to run commands,
+  ;; which sources these on startup. Cover both bash and zsh regardless of
+  ;; which is \$SHELL, since either may still be invoked interactively.
+  (literal "$HOME/.bashrc")
+  (literal "$HOME/.bash_profile")
+  (literal "$HOME/.bash_login")
+  (literal "$HOME/.profile")
+  (literal "$HOME/.zshrc")
+  (literal "$HOME/.zprofile")
+  (literal "$HOME/.zshenv")
+  (literal "$HOME/.zlogin")
   (subpath "$HOME/.nvm")
   (subpath "$HOME/.local/bin")
   (subpath "$HOME/.local/share/claude")
@@ -275,11 +290,13 @@ PROFILE=$(cat <<SBPROFILE
 SBPROFILE
 )
 
-# Conditionally allow the ssh-agent socket. SSH_AUTH_SOCK on macOS is
-# typically a path under /private/tmp/com.apple.launchd.*, already covered
-# above, but be explicit so a non-default location works too.
+# Conditionally allow the ssh-agent socket. On macOS, SSH_AUTH_SOCK is
+# typically /var/run/com.apple.launchd.*/Listeners, which is a symlink into
+# /private/var/run/... — the sandbox literal rule must use the canonical path
+# because the kernel checks resolved paths, not symlinks.
 if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
-    PROFILE+=$'\n'"(allow file-read* file-write* network-outbound (literal \"$SSH_AUTH_SOCK\"))"
+    _ssh_sock_real="$(realpath "$SSH_AUTH_SOCK" 2>/dev/null || echo "$SSH_AUTH_SOCK")"
+    PROFILE+=$'\n'"(allow file-read* file-write* network-outbound (literal \"$_ssh_sock_real\"))"
 fi
 if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then
     PROFILE+=$'\n'"(allow file-read* (subpath \"$CCODE_EXTRA_BIN_DIR\"))"
@@ -299,6 +316,11 @@ ENV_ARGS=(
     # Sandbox-installed cargo bin first, then host cargo bin (read-only,
     # provides the rustup-managed `cargo`/`rustc` shims), then the rest.
     PATH="$_SANDBOX_PATH"
+
+    # Explicit TMPDIR so tools default to a sandbox-writable per-session dir
+    # instead of falling back to libc's P_tmpdir ("/var/tmp/" on macOS) when
+    # unset — e.g. gmake's fifo-based jobserver hits that fallback directly.
+    TMPDIR="$SBX/tmp"
 
     # Toolchain caches redirected to sandbox-private locations.
     NPM_CONFIG_CACHE="$SBX/npm"
@@ -343,8 +365,11 @@ ENV_ARGS=(
 if _GH_TOKEN=$(gh auth token 2>/dev/null) && [[ -n "$_GH_TOKEN" ]]; then
     ENV_ARGS+=(GH_TOKEN="$_GH_TOKEN")
 fi
-[[ -n "${PHABRICATOR_TOKEN:-}" ]] && ENV_ARGS+=(PHABRICATOR_TOKEN="$PHABRICATOR_TOKEN")
-[[ -n "${BMO_API_KEY:-}" ]]       && ENV_ARGS+=(BMO_API_KEY="$BMO_API_KEY")
+[[ -n "${PHABRICATOR_TOKEN:-}" ]]    && ENV_ARGS+=(PHABRICATOR_TOKEN="$PHABRICATOR_TOKEN")
+[[ -n "${BMO_API_KEY:-}" ]]         && ENV_ARGS+=(BMO_API_KEY="$BMO_API_KEY")
+[[ -n "${CARGO_REGISTRY_TOKEN:-}" ]] && ENV_ARGS+=(CARGO_REGISTRY_TOKEN="$CARGO_REGISTRY_TOKEN")
+[[ -n "${MATURIN_PYPI_TOKEN:-}" ]]   && ENV_ARGS+=(MATURIN_PYPI_TOKEN="$MATURIN_PYPI_TOKEN")
+[[ -n "${UV_PUBLISH_TOKEN:-}" ]]     && ENV_ARGS+=(UV_PUBLISH_TOKEN="$UV_PUBLISH_TOKEN")
 # MOZCONFIG points to a directory that may contain executables (compilers,
 # build tools, wrappers). Like the sandbox-private toolchain caches, a
 # compromised agent could drop malicious binaries here for the host to pick
