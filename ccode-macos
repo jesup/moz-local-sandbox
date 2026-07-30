@@ -149,10 +149,16 @@ PROFILE=$(cat <<SBPROFILE
 ;; call LaunchServices directly to open/launch other things via the same
 ;; confused-deputy path (asking unsandboxed launchd/runningboardd to
 ;; spawn something on its behalf).
+;;
+;; pasteboard (com.apple.pasteboard.0/.1) is ALSO not denied, again
+;; deliberately, again for Firefox compatibility: widget/cocoa/nsClipboard.mm
+;; calls GetPasteboard() unconditionally on startup paths unrelated to
+;; whether a given test touches the clipboard, then MOZ_ASSERT()s the
+;; result — denied, that assertion is fatal in debug builds, killing the
+;; process outright. Accepted as a residual risk (see README): a
+;; compromised agent can now read/write the host clipboard.
 (allow mach-lookup)
 (deny mach-lookup
-  (global-name "com.apple.pasteboard.1")
-  (global-name "com.apple.pasteboard.0")
   (global-name "com.apple.pbs.fetch_services")
   (global-name "com.apple.pbs.fetch_services_for_pid")
   (global-name "com.apple.coreservices.appleevents")
