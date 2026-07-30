@@ -119,6 +119,15 @@ PROFILE=$(cat <<SBPROFILE
 (allow signal (target self))
 (allow signal (target children))
 (allow sysctl-read)
+;; Firefox applies its own nested per-process-type sandbox (content, GPU,
+;; etc.) on top of this outer profile. Nested sandbox_init() can only
+;; restrict further, never grant something the outer profile denies, so
+;; each specific rule a child profile needs has to be present here too.
+;; kern.tcsm_enable (Apple Silicon timer-coalescing tuning) is one such
+;; rule the content-process profile requires (see
+;; security/sandbox/mac/SandboxPolicyContent.h in the Firefox tree).
+(allow sysctl-write
+  (sysctl-name "kern.tcsm_enable"))
 (allow system-sched (target self))
 
 ;; Mach services. Most system frameworks require mach-lookup to start, so
@@ -127,6 +136,19 @@ PROFILE=$(cat <<SBPROFILE
 ;; usual sandbox-escape vectors on macOS: clipboard (pasteboard), cross-
 ;; app scripting (AppleEvents), the Dock, the menu bar, and Notification
 ;; Center.
+;;
+;; launchservicesd is NOT denied, unlike the others here — deliberately.
+;; Any real AppKit process (e.g. Firefox, including -headless) calls
+;; TransformProcessType/_RegisterApplication during startup, which needs
+;; this mach-lookup; denied, HIServices aborts the whole process instead
+;; of failing gracefully. Since running real Firefox (mochitest etc.) is
+;; a primary use case for this sandbox, we accept the residual risk this
+;; opens — see README residual risks — rather than break that. This does
+;; reduce the URL-open mitigation below to a client-side allowlist rather
+;; than a hard host-side boundary: a compromised agent could in principle
+;; call LaunchServices directly to open/launch other things via the same
+;; confused-deputy path (asking unsandboxed launchd/runningboardd to
+;; spawn something on its behalf).
 (allow mach-lookup)
 (deny mach-lookup
   (global-name "com.apple.pasteboard.1")
@@ -142,10 +164,13 @@ PROFILE=$(cat <<SBPROFILE
   (global-name "com.apple.usernotifications.usernotificationservice")
   (global-name "com.apple.usernotifications.delegate")
   (global-name "com.apple.NotificationCenterAgent")
-  (global-name "com.apple.distributed_notifications.2")
-  (global-name "com.apple.launchservicesd")
-  (global-name "com.apple.coreservices.launchservicesd"))
+  (global-name "com.apple.distributed_notifications.2"))
 (allow mach-priv-host-port)
+;; Needed for the Firefox multi-process bootstrap handshake: the parent
+;; registers a per-child bootstrap name that the child checks in against
+;; (GeckoChildProcessHost / bootstrap_check_in). Without this, content/GPU/
+;; socket child processes fail to launch (bootstrap_check_in error 1100).
+(allow mach-register)
 ;; task_for_pid — lets lldb/debugserver get the task port of a target process.
 (allow mach-priv-task-port)
 ;; system-debug — gates ptrace(PT_ATTACHEXC); needed for lldb process attach.
@@ -215,20 +240,17 @@ PROFILE=$(cat <<SBPROFILE
 ;; Readable so the agent can authenticate; not writable so it cannot tamper.
 ;; (Note: RO does not prevent exfiltration. Bearer tokens here remain within
 ;; reach of a compromised agent — see README.)
+;; Shell rc/profile files (.bashrc, .zshenv, etc.) are deliberately NOT
+;; exposed, even read-only: they are host user dotfiles that can contain
+;; exported secrets (API keys, tokens) or arbitrary PATH/alias tampering,
+;; and the sandboxed shell has no legitimate need to read the personal
+;; shell customizations of the host account to run commands. The shell
+;; the Bash tool spawns inside the sandbox will emit harmless "permission
+;; denied" warnings when it tries to source them on startup; commands
+;; still run normally.
 (allow file-read*
   (literal "$HOME/.gitconfig")
   (literal "$HOME/.arcrc")
-  ;; Shell rc/profile files: the Bash tool spawns \$SHELL to run commands,
-  ;; which sources these on startup. Cover both bash and zsh regardless of
-  ;; which is \$SHELL, since either may still be invoked interactively.
-  (literal "$HOME/.bashrc")
-  (literal "$HOME/.bash_profile")
-  (literal "$HOME/.bash_login")
-  (literal "$HOME/.profile")
-  (literal "$HOME/.zshrc")
-  (literal "$HOME/.zprofile")
-  (literal "$HOME/.zshenv")
-  (literal "$HOME/.zlogin")
   (subpath "$HOME/.nvm")
   (subpath "$HOME/.local/bin")
   (subpath "$HOME/.local/share/claude")
@@ -275,6 +297,14 @@ PROFILE=$(cat <<SBPROFILE
   (subpath "$HOME/Library/Caches/com.apple.dt.lldb")
   (subpath "$HOME/Library/Caches/com.apple.symbols")
   (subpath "$HOME/Library/Developer"))
+
+;; ~/Library/Application Support/Firefox holds profiles.ini and the crash
+;; reports directory. Even with an explicit -profile path, the Firefox
+;; profile service reads/writes this on startup; without it, profile
+;; selection fails and Firefox shows a native profile-missing dialog
+;; that spins the event loop forever in headless/no-display test runs.
+(allow file-read* file-write*
+  (subpath "$HOME/Library/Application Support/Firefox"))
 
 ;; --- Read-write paths ---
 ;; ~/.claude and ~/.claude.json are rw-shared with host. A compromised
@@ -348,6 +378,23 @@ ENV_ARGS=(
     GIT_CONFIG_COUNT="1"
     GIT_CONFIG_KEY_0="core.hooksPath"
     GIT_CONFIG_VALUE_0="$SBX/empty-hooks"
+
+    # Firefox applies its own nested per-process sandbox (content, GPU,
+    # GMP, VR, RDD, socket, utility) via the same deprecated sandbox_init()
+    # API this outer seatbelt profile uses. Per Apple's own sandbox.h: "If
+    # the process is already in a sandbox, the new profile is ignored and
+    # sandbox_init() returns an error" — unconditional, not version- or
+    # permission-dependent, confirmed by direct API test. Firefox's own
+    # per-process sandboxing and this outer container can never coexist,
+    # so it is disabled here; the outer seatbelt profile is the actual
+    # confinement boundary for anything run under this sandbox.
+    MOZ_DISABLE_CONTENT_SANDBOX="1"
+    MOZ_DISABLE_GMP_SANDBOX="1"
+    MOZ_DISABLE_GPU_SANDBOX="1"
+    MOZ_DISABLE_VR_SANDBOX="1"
+    MOZ_DISABLE_RDD_SANDBOX="1"
+    MOZ_DISABLE_SOCKET_PROCESS_SANDBOX="1"
+    MOZ_DISABLE_UTILITY_SANDBOX="1"
 )
 
 # Note: we used to forward Claude Code's OAuth token via

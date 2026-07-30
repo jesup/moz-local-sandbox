@@ -52,9 +52,7 @@ bugs, Phabricator revisions, and localhost dev servers in the host browser.
 outside the sandbox and listens on a random loopback port. The in-sandbox
 `xdg-open` (Linux) or `open` (macOS) command is shadowed by `bin/ccode-open`,
 which sends the URL to the host server via loopback. The server re-validates
-and calls `xdg-open` / `/usr/bin/open` on the host. Direct use of the OS open
-mechanism is blocked inside the sandbox (no D-Bus on Linux; LaunchServices
-mach-lookup is denied on macOS), so the host server is the only path.
+and calls `xdg-open` / `/usr/bin/open` on the host.
 
 **Allowed URLs (hardcoded):**
 - `https://bugzilla.mozilla.org/*`
@@ -62,9 +60,14 @@ mach-lookup is denied on macOS), so the host server is the only path.
 - `http(s)://localhost:<any-port>/*`
 - `http(s)://127.0.0.1:<any-port>/*`
 
-Everything else is blocked at the host listener. The agent cannot bypass
-this by modifying `bin/ccode-open` — the host listener validates
-independently.
+The agent cannot bypass this by modifying `bin/ccode-open` — the host
+listener validates independently. On Linux this is also the *only* path
+to the OS open mechanism (no D-Bus inside the sandbox), so it's a hard
+boundary. On macOS it is not: LaunchServices mach-lookup is allowed (see
+residual risks), so this allowlist is client-side-only there — real
+enforcement for macOS would require denying that mach-lookup, which
+breaks running real Firefox inside the sandbox. Treat the macOS allowlist
+as a guardrail against accidents, not a security boundary.
 
 ### Host-side noexec (macOS, opt-in)
 
@@ -295,4 +298,23 @@ of:
   reachable via Mach. AppleEvents in particular is gated by TCC rather
   than sandbox-exec on modern macOS; the deny rule is a tripwire, not a
   guarantee.
+
+- **macOS: LaunchServices is reachable.** `com.apple.launchservicesd` /
+  `com.apple.coreservices.launchservicesd` are deliberately not in the
+  mach-lookup deny list, unlike the other user-facing services above.
+  Any real AppKit process (Firefox included, `-headless` or not) calls
+  `TransformProcessType`/`_RegisterApplication` during startup, which
+  needs this service — denied, `HIServices` aborts the whole process
+  instead of failing gracefully, which broke running Firefox/mochitest
+  entirely. Since that's a primary use case for this sandbox, we allow
+  it. This means a compromised agent can drive LaunchServices directly —
+  `open`/`NSWorkspace`-style calls to launch arbitrary apps or files —
+  which is a real macOS confused-deputy sandbox-escape path (the actual
+  spawn happens via unsandboxed `launchd`/`runningboardd` on the agent's
+  behalf, outside this container). It also means the URL-open allowlist
+  above is not a hard boundary on macOS. We could not find a way to
+  preserve both "Firefox runs" and "LaunchServices is denied" — see the
+  git history for a broker/shim approach that was tried and reverted for
+  being too much complexity for a narrower-but-still-real version of the
+  same hole.
 
