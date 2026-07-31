@@ -313,11 +313,43 @@ trap '[[ -n "${_OPEN_PID:-}" ]] && kill "$_OPEN_PID" 2>/dev/null; true' EXIT
 
 if [[ "${1:-}" == "--exec" ]]; then
     shift
-    bwrap "${args[@]}" "$@"
+    bwrap "${args[@]}" "$@" &
 else
     bwrap "${args[@]}" \
         "$(command -v claude)" \
         --permission-mode bypassPermissions \
         ${MCP_CONFIG:+--mcp-config "$MCP_CONFIG"} \
-        "$@"
+        "$@" &
 fi
+BWRAP_PID=$!
+
+# --new-session (above) detaches the sandboxed process into its own session
+# so it can't TIOCSTI-inject into our terminal. Side effect: the kernel
+# delivers SIGWINCH on resize to the terminal's foreground process group,
+# which this script is still in but the sandboxed process no longer is. Claude
+# never learns the window resized. Forward it by hand: kill(2) isn't gated on
+# session membership (only tty ioctls are), so we can signal the sandboxed
+# session leader directly without weakening --new-session.
+forward_winch() {
+    local frontier=("$BWRAP_PID") all=("$BWRAP_PID") next p c sid leader
+    while [[ ${#frontier[@]} -gt 0 ]]; do
+        next=()
+        for p in "${frontier[@]}"; do
+            for c in $(pgrep -P "$p" 2>/dev/null || true); do
+                next+=("$c"); all+=("$c")
+            done
+        done
+        frontier=("${next[@]}")
+    done
+    for p in "${all[@]}"; do
+        sid=$(ps -o sid= -p "$p" 2>/dev/null | tr -d ' ')
+        if [[ -n "$sid" && "$sid" == "$p" ]]; then
+            leader="$p"
+            break
+        fi
+    done
+    [[ -n "${leader:-}" ]] && kill -WINCH "-$leader" 2>/dev/null
+}
+trap forward_winch WINCH
+
+wait "$BWRAP_PID"
