@@ -88,7 +88,7 @@ if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then
     CCODE_EXTRA_BIN_DIR="${CCODE_EXTRA_BIN_DIR/#\~/$HOME}"
     [[ -d "$CCODE_EXTRA_BIN_DIR" ]] || { echo "ccode: CCODE_EXTRA_BIN_DIR=$CCODE_EXTRA_BIN_DIR: not a directory" >&2; exit 1; }
 fi
-_SANDBOX_PATH="$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/ccode-bin:/opt/cargo-host/bin:/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+_SANDBOX_PATH="$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/ccode-bin:/opt/cargo-host/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]] && _SANDBOX_PATH="${CCODE_EXTRA_BIN_DIR}:${_SANDBOX_PATH}"
 
 # Build the bwrap argv as an array. Bash does not allow `# comment` lines
@@ -100,7 +100,6 @@ args=(
     --ro-bind /lib /lib
     --ro-bind /lib64 /lib64
     --ro-bind /bin /bin
-    --ro-bind-try /snap /snap
 
     # --- Read-only network / auth config ---
     # resolv.conf and hosts: DNS for mach, gh, etc.
