@@ -7,6 +7,14 @@ Sandbox for running Claude Code (`claude`) against a Firefox checkout.
 
 ## Usage
 
+### Setup
+
+If you have your source code in `~/src` and you're ok with sharing all this in
+the sandbox, you can proceed to the next step. Otherwise, check the section `Env
+vars` below to change the default policy.
+
+### Then
+
 ```
 ccode [claude-args...]
 ccode --exec PROGRAM [args...]
