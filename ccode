@@ -158,7 +158,7 @@ args=(
     --bind "$CWD"                     "$CWD"
     --bind "$HOME/.claude"            "$HOME/.claude"
     --bind "$HOME/.claude.json"       "$HOME/.claude.json"
-    --try-bind "$HOME/.local/share/rr"    "$HOME/.local/share/rr"
+    --bind-try "$HOME/.local/share/rr"    "$HOME/.local/share/rr"
     --bind "$HOME/.mozbuild"          "$HOME/.mozbuild"
 
     # Sandbox-private toolchain caches mounted over the canonical host paths.
