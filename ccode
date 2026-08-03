@@ -52,6 +52,10 @@ mkdir -p \
     "$SBX/go" \
     "$SBX/empty-hooks"
 
+# rr's default trace directory. Bound read-write below so traces survive the
+# session; create it on the host first, since rr may never have run here.
+mkdir -p "$HOME/.local/share/rr"
+
 # Start the open server. bin/ccode-open-server is a Python script that
 # listens on a random loopback port, validates URLs against a hardcoded
 # allowlist, and calls xdg-open on the host. The in-sandbox xdg-open
@@ -124,7 +128,7 @@ args=(
     --ro-bind "$HOME/.arcrc"                 "$HOME/.arcrc"
     --ro-bind-try "$HOME/.config/gh"             "$HOME/.config/gh"
     --ro-bind-try "$HOME/.config/claude"     "$HOME/.config/claude"  # may not exist; mcp-servers.json searched explicitly below
-    --ro-bind "$HOME/.config/jj"             "$HOME/.config/jj"
+    --ro-bind-try "$HOME/.config/jj"         "$HOME/.config/jj"
 
     # Shell rc/profile files: the Bash tool spawns $SHELL to run commands,
     # which sources these on startup. Cover both bash and zsh regardless of
@@ -154,7 +158,7 @@ args=(
     --bind "$CWD"                     "$CWD"
     --bind "$HOME/.claude"            "$HOME/.claude"
     --bind "$HOME/.claude.json"       "$HOME/.claude.json"
-    --bind "$HOME/.local/share/rr"    "$HOME/.local/share/rr"
+    --try-bind "$HOME/.local/share/rr"    "$HOME/.local/share/rr"
     --bind "$HOME/.mozbuild"          "$HOME/.mozbuild"
 
     # Sandbox-private toolchain caches mounted over the canonical host paths.
