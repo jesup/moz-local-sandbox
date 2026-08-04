@@ -258,14 +258,16 @@ if [[ -n "${MOZBUILD_STATE_PATH:-}" ]]; then
     args+=(--setenv MOZBUILD_STATE_PATH "$MOZBUILD_STATE_PATH")
 fi
 
-# Forward the ssh-agent socket if one is available on the host. The agent
-# inside the sandbox can use it for signing (e.g. ssh / git push) but cannot
-# read the underlying private keys.
-if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
-    args+=(
-        --ro-bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK"
-        --setenv  SSH_AUTH_SOCK    "$SSH_AUTH_SOCK"
-    )
+if [[ -z "${CCODE_NO_SSH_AGENT:-}" ]]; then
+  # Forward the ssh-agent socket if one is available on the host. The agent
+  # inside the sandbox can use it for signing (e.g. ssh / git push) but cannot
+  # read the underlying private keys.
+  if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+      args+=(
+          --ro-bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK"
+          --setenv  SSH_AUTH_SOCK    "$SSH_AUTH_SOCK"
+      )
+  fi
 fi
 
 if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then

@@ -3,15 +3,15 @@
 Sandbox for running Claude Code (`claude`) against a Firefox checkout.
 
 - **Linux:** `bwrap`-based, supports `rr` via rr-mcp. Script: `ccode`.
-- **macOS:** `sandbox-exec` (Seatbelt) based. Script: `ccode-macos`. No `rr` (Linux-only).
+- **macOS:** `sandbox-exec` (Seatbelt) based. Script: `ccode-macos`.
 
 ## Usage
 
 ### Setup
 
 If you have your source code in `~/src` and you're ok with sharing all this in
-the sandbox, you can proceed to the next step. Otherwise, check the section `Env
-vars` below to change the default policy.
+the sandbox and forwarding an SSH agent, you can proceed to the next step.
+Otherwise, check the section `Env vars` below to change the default policy.
 
 ### Then
 
@@ -22,21 +22,24 @@ ccode --exec PROGRAM [args...]
 
 Without `--exec`, launches `claude --permission-mode bypassPermissions` in the
 sandbox. With `--exec`, runs the given program instead (shell, `mach`, etc).
+This can be useful to diagnosis.
 
 `~/src` and state dirs are writable; most of the system is read-only. Network
-is shared (needed for `mach`). MCP config (`~/.config/claude/mcp-servers.json`
-or `~/.claude/mcp-servers.json`) is passed through automatically if present.
+is shared (needed for various things under and in `mach`). MCP config
+(`~/.config/claude/mcp-servers.json` or `~/.claude/mcp-servers.json`) is passed
+through automatically if present.
 
 `./install.sh` symlinks the OS-appropriate script to `~/bin/ccode`, or symlink
 `ccode`/`ccode-macos` onto your `$PATH` manually.
 
 ### Env vars
 
-- `CCODE_SRC=/path` — use a different root than `~/src`.
-- `CCODE_CWD_ONLY=1` — expose only `$PWD` rw instead of all of `~/src`.
-- `CCODE_EXTRA_BIN_DIR=/path` — mount a host bin dir read-only, prepended to `PATH`.
-- `CCODE_NOEXEC=1` (macOS) — strip the exec bit from any file that gained it
+- `CCODE_SRC=/path` - use a different root than `~/src`.
+- `CCODE_CWD_ONLY=1` - expose only `$PWD` rw instead of all of `~/src`.
+- `CCODE_EXTRA_BIN_DIR=/path` - mount a host bin dir read-only, prepended to `PATH`.
+- `CCODE_NOEXEC=1` (macOS) - strip the exec bit from any file that gained it
   during the session, on exit. No automatic restore (`chmod +x` on host).
+- `CCODE_NO_SSH_AGENT=1` - disable SSH agent forwarding.
 
 ### Opening URLs in the host browser
 
@@ -97,8 +100,8 @@ Mach services (Dock, Notification Center, pasteboard-adjacent, AppleEvents).
 See `ccode`/`ccode-macos` source for the exact mount/rule list.
 
 Env vars forwarded in: `GH_TOKEN`, `PHABRICATOR_TOKEN`, `BMO_API_KEY`,
-`SSH_AUTH_SOCK`, `MOZCONFIG`, `MOZBUILD_STATE_PATH`. Everything else is
-dropped.
+`SSH_AUTH_SOCK` (if not disabled), `MOZCONFIG`, `MOZBUILD_STATE_PATH`.
+Everything else is dropped.
 
 ## Residual risks
 

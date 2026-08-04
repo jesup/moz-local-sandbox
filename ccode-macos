@@ -326,16 +326,18 @@ PROFILE=$(cat <<SBPROFILE
 SBPROFILE
 )
 
-# Conditionally allow the ssh-agent socket. On macOS, SSH_AUTH_SOCK is
-# typically /var/run/com.apple.launchd.*/Listeners, which is a symlink into
-# /private/var/run/... — the sandbox literal rule must use the canonical path
-# because the kernel checks resolved paths, not symlinks.
-if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
-    _ssh_sock_real="$(realpath "$SSH_AUTH_SOCK" 2>/dev/null || echo "$SSH_AUTH_SOCK")"
-    PROFILE+=$'\n'"(allow file-read* file-write* network-outbound (literal \"$_ssh_sock_real\"))"
-fi
-if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then
-    PROFILE+=$'\n'"(allow file-read* (subpath \"$CCODE_EXTRA_BIN_DIR\"))"
+if [[ -z "${CCODE_NO_SSH_AGENT:-}" ]]; then
+  # Conditionally allow the ssh-agent socket. On macOS, SSH_AUTH_SOCK is
+  # typically /var/run/com.apple.launchd.*/Listeners, which is a symlink into
+  # /private/var/run/... — the sandbox literal rule must use the canonical path
+  # because the kernel checks resolved paths, not symlinks.
+  if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+      _ssh_sock_real="$(realpath "$SSH_AUTH_SOCK" 2>/dev/null || echo "$SSH_AUTH_SOCK")"
+      PROFILE+=$'\n'"(allow file-read* file-write* network-outbound (literal \"$_ssh_sock_real\"))"
+  fi
+  if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then
+      PROFILE+=$'\n'"(allow file-read* (subpath \"$CCODE_EXTRA_BIN_DIR\"))"
+  fi
 fi
 
 
