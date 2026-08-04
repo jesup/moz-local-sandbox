@@ -45,3 +45,17 @@ if [[ ":$PATH:" != *":$TARGET_DIR:"* ]]; then
     echo "Note: $TARGET_DIR is not on your \$PATH. Add it, e.g.:"
     echo "  export PATH=\"$TARGET_DIR:\$PATH\""
 fi
+
+if [[ "$(uname)" == "Linux" ]] && command -v apparmor_parser >/dev/null 2>&1; then
+    APPARMOR_SRC="$REPO/apparmor/bwrap-userns-restrict"
+    APPARMOR_DST="/etc/apparmor.d/bwrap-userns-restrict"
+    read -r -p "Install AppArmor profile to $APPARMOR_DST (needs sudo, required for rr on Ubuntu/Debian)? [y/N] " reply
+    case "$reply" in
+        [yY]|[yY][eE][sS])
+            sudo cp "$APPARMOR_SRC" "$APPARMOR_DST"
+            sudo apparmor_parser -r "$APPARMOR_DST"
+            echo "Installed AppArmor profile: $APPARMOR_DST"
+            ;;
+        *) echo "Skipped AppArmor profile install." ;;
+    esac
+fi
