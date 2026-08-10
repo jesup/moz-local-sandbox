@@ -367,10 +367,16 @@ BWRAP_PID=$!
 # delivers SIGWINCH on resize to the terminal's foreground process group,
 # which this script is still in but the sandboxed process no longer is. Claude
 # never learns the window resized. Forward it by hand: kill(2) isn't gated on
-# session membership (only tty ioctls are), so we can signal the sandboxed
-# session leader directly without weakening --new-session.
+# session membership (only tty ioctls are), so we can signal into the sandboxed
+# session directly without weakening --new-session.
+#
+# Signal every descendant rather than hunting for the sandbox's session leader
+# and signalling its process group: the default disposition of SIGWINCH is
+# "ignore", so processes that don't care are unaffected, and this avoids
+# depending on how a given bubblewrap version lays out its monitor/init/command
+# processes or on `ps` reporting session ids across a PID namespace.
 forward_winch() {
-    local frontier=("$BWRAP_PID") all=("$BWRAP_PID") next p c sid leader
+    local frontier=("$BWRAP_PID") all=("$BWRAP_PID") next p c
     while [[ ${#frontier[@]} -gt 0 ]]; do
         next=()
         for p in "${frontier[@]}"; do
@@ -380,15 +386,17 @@ forward_winch() {
         done
         frontier=("${next[@]}")
     done
-    for p in "${all[@]}"; do
-        sid=$(ps -o sid= -p "$p" 2>/dev/null | tr -d ' ')
-        if [[ -n "$sid" && "$sid" == "$p" ]]; then
-            leader="$p"
-            break
-        fi
-    done
-    [[ -n "${leader:-}" ]] && kill -WINCH "-$leader" 2>/dev/null
+    kill -WINCH "${all[@]}" 2>/dev/null || true
 }
 trap forward_winch WINCH
 
-wait "$BWRAP_PID"
+# A trapped signal arriving while `wait` is blocked makes it return 128+signo
+# (bash(1), SIGNALS) — so the first resize would otherwise drop us out of the
+# wait, and `set -e` would exit the script on that 156, which in turn kills the
+# sandbox through --die-with-parent. Keep waiting until bwrap has actually gone.
+_status=0
+until wait "$BWRAP_PID"; do
+    _status=$?
+    kill -0 "$BWRAP_PID" 2>/dev/null || break
+done
+exit "$_status"
