@@ -134,6 +134,10 @@ args=(
     --ro-bind /etc/hosts            /etc/hosts
     --ro-bind-try /etc/ssl          /etc/ssl
     --ro-bind-try /etc/pki          /etc/pki
+    # Fedora's /etc/pki/tls/openssl.cnf .includes this; without it OpenSSL
+    # fails to initialise and node — hence claude — refuses to start at all.
+    # Absent on Debian/Ubuntu.
+    --ro-bind-try /etc/crypto-policies /etc/crypto-policies
     --ro-bind /etc/passwd           /etc/passwd
     --ro-bind /etc/group            /etc/group
 
