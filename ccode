@@ -119,7 +119,7 @@ args=(
     # --- Read-only system directories ---
     --ro-bind /usr /usr
     --ro-bind /lib /lib
-    --ro-bind /lib64 /lib64
+    --ro-bind-try /lib64 /lib64  # absent on arm64 Debian/Ubuntu
     --ro-bind /bin /bin
 
     # --- Read-only network / auth config ---
@@ -354,15 +354,20 @@ done
 
 trap '[[ -n "${_OPEN_PID:-}" ]] && kill "$_OPEN_PID" 2>/dev/null; true' EXIT
 
+# bwrap runs in the background so this script stays alive to forward SIGWINCH
+# (see below). That backgrounding is why stdin has to be redirected explicitly:
+# bash points an asynchronous command's stdin at /dev/null unless the command
+# has a redirection of its own, and claude's TUI needs the real terminal on
+# stdin — without `<&0` it starts, hides the cursor and hangs forever.
 if [[ "${1:-}" == "--exec" ]]; then
     shift
-    bwrap "${args[@]}" "$@" &
+    bwrap "${args[@]}" "$@" <&0 &
 else
     bwrap "${args[@]}" \
         "$(command -v claude)" \
         --permission-mode bypassPermissions \
         ${MCP_CONFIG:+--mcp-config "$MCP_CONFIG"} \
-        "$@" &
+        "$@" <&0 &
 fi
 BWRAP_PID=$!
 
