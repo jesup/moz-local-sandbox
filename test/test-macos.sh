@@ -129,7 +129,10 @@ check "UV_CACHE_DIR redirected"                   '^UV_CACHE_DIR=.*\.sandbox/uv$
 check "GOPATH redirected"                         '^GOPATH=.*\.sandbox/go$'         present
 check "GOMODCACHE redirected"                     '^GOMODCACHE=.*\.sandbox/go/pkg/mod$' present
 check "NPM_CONFIG_CACHE redirected"               '^NPM_CONFIG_CACHE=.*\.sandbox/npm$'  present
-check "NPM_CONFIG_PREFIX redirected"              '^NPM_CONFIG_PREFIX=.*\.sandbox/npm-prefix$' present
+# The global prefix goes through an npmrc rather than NPM_CONFIG_PREFIX:
+# nvm refuses to activate a node version while that variable is set.
+check "npm userconfig redirected"                 '^NPM_CONFIG_USERCONFIG=.*\.sandbox/npmrc$' present
+check "NPM_CONFIG_PREFIX not set (breaks nvm)"    '^NPM_CONFIG_PREFIX='             absent
 check "PIP_CACHE_DIR redirected"                  '^PIP_CACHE_DIR=.*\.sandbox/pip$' present
 check "RUSTUP_HOME points at host (read-only)"    '^RUSTUP_HOME=.*/\.rustup$'       present
 check "git core.hooksPath override set"           '^GIT_CONFIG_KEY_0=core\.hooksPath$' present

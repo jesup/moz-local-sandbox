@@ -56,6 +56,15 @@ mkdir -p \
     "$SBX/tmp" \
     "$SBX/empty-hooks"
 
+# npm's global prefix cannot be handed over as NPM_CONFIG_PREFIX: nvm's
+# nvm_die_on_prefix() refuses to activate any node version while that variable
+# points anywhere other than the version dir itself, which left nvm users with
+# no node at all inside the sandbox. npm also reads `prefix` from the user
+# npmrc, and nvm never looks at npmrc files, so route it through one. Created
+# once and then left alone: `npm login` inside the sandbox writes its auth
+# token here and rewriting the file every launch would throw that away.
+[[ -f "$SBX/npmrc" ]] || printf 'prefix=%s\n' "$SBX/npm-prefix" > "$SBX/npmrc"
+
 # ~/.claude is shared rw with the host (re-exposed below). We had it
 # isolated via CLAUDE_CONFIG_DIR at one point, but Claude Code on macOS
 # spreads its login state across $HOME/.claude/, $HOME/.claude.json, AND
@@ -99,7 +108,19 @@ if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then
     CCODE_EXTRA_BIN_DIR="${CCODE_EXTRA_BIN_DIR/#\~/$HOME}"
     [[ -d "$CCODE_EXTRA_BIN_DIR" ]] || { echo "ccode: CCODE_EXTRA_BIN_DIR=$CCODE_EXTRA_BIN_DIR: not a directory" >&2; exit 1; }
 fi
-_SANDBOX_PATH="$SBX/cargo/bin:$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:$REPO_DIR/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+# nvm activates a node version by mutating PATH from a shell function the
+# user's rc sources; anything the sandbox execs directly — claude included —
+# never goes through that, and neither does a non-interactive shell. Resolve
+# the host's active node now and put its bin dir on PATH. Only nvm-managed
+# installs qualify: ~/.nvm is the sole node tree the profile exposes.
+_NODE_BIN=""
+_host_node="$(command -v node 2>/dev/null || true)"
+if [[ -n "$_host_node" ]]; then
+    _host_node_bin="$(cd "$(dirname "$_host_node")" && pwd)"
+    [[ "$_host_node_bin" == "${NVM_DIR:-$HOME/.nvm}"/* ]] && _NODE_BIN="$_host_node_bin"
+fi
+
+_SANDBOX_PATH="$SBX/cargo/bin:$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:${_NODE_BIN:+$_NODE_BIN:}$REPO_DIR/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
 [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]] && _SANDBOX_PATH="${CCODE_EXTRA_BIN_DIR}:${_SANDBOX_PATH}"
 
 # Build the sandbox profile (SBPL). $HOME / $RW_ROOT / $SBX are interpolated
@@ -362,7 +383,7 @@ ENV_ARGS=(
 
     # Toolchain caches redirected to sandbox-private locations.
     NPM_CONFIG_CACHE="$SBX/npm"
-    NPM_CONFIG_PREFIX="$SBX/npm-prefix"
+    NPM_CONFIG_USERCONFIG="$SBX/npmrc"
     PIP_CACHE_DIR="$SBX/pip"
     GOPATH="$SBX/go"
     GOMODCACHE="$SBX/go/pkg/mod"

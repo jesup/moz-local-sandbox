@@ -99,6 +99,10 @@ read-write on Linux. macOS additionally exposes `~/Library/Keychains` read-write
 Mach services (Dock, Notification Center, pasteboard-adjacent, AppleEvents).
 See `ccode`/`ccode-macos` source for the exact mount/rule list.
 
+`~/.nvm` is read-only, like `~/.rustup`: the version you had active on the
+host is on `PATH` inside and `npm i -g` installs into `~/.sandbox/npm-prefix`,
+but `nvm install` fails by design — add node versions on the host.
+
 Env vars forwarded in: `GH_TOKEN`, `PHABRICATOR_TOKEN`, `BMO_API_KEY`,
 `SSH_AUTH_SOCK` (if not disabled), `MOZCONFIG`, `MOZBUILD_STATE_PATH`.
 Everything else is dropped.

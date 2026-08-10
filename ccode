@@ -52,6 +52,15 @@ mkdir -p \
     "$SBX/go" \
     "$SBX/empty-hooks"
 
+# npm's global prefix cannot be handed over as NPM_CONFIG_PREFIX: nvm's
+# nvm_die_on_prefix() refuses to activate any node version while that variable
+# points anywhere other than the version dir itself, which left nvm users with
+# no node at all inside the sandbox. npm also reads `prefix` from the user
+# npmrc, and nvm never looks at npmrc files, so route it through one. Created
+# once and then left alone: `npm login` inside the sandbox writes its auth
+# token here and rewriting the file every launch would throw that away.
+[[ -f "$SBX/npmrc" ]] || printf 'prefix=%s\n' "$SBX/npm-prefix" > "$SBX/npmrc"
+
 # rr's default trace directory. Bound read-write below so traces survive the
 # session; create it on the host first, since rr may never have run here.
 mkdir -p "$HOME/.local/share/rr"
@@ -88,7 +97,19 @@ if [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]]; then
     CCODE_EXTRA_BIN_DIR="${CCODE_EXTRA_BIN_DIR/#\~/$HOME}"
     [[ -d "$CCODE_EXTRA_BIN_DIR" ]] || { echo "ccode: CCODE_EXTRA_BIN_DIR=$CCODE_EXTRA_BIN_DIR: not a directory" >&2; exit 1; }
 fi
-_SANDBOX_PATH="$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:/opt/ccode-bin:/opt/cargo-host/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# nvm activates a node version by mutating PATH from a shell function the
+# user's rc sources; anything the sandbox execs directly — claude included —
+# never goes through that, and neither does a non-interactive shell. Resolve
+# the host's active node now and put its bin dir on PATH. Only nvm-managed
+# installs qualify: ~/.nvm is the sole node tree exposed to the sandbox.
+_NODE_BIN=""
+_host_node="$(command -v node 2>/dev/null || true)"
+if [[ -n "$_host_node" ]]; then
+    _host_node_bin="$(cd "$(dirname "$_host_node")" && pwd)"
+    [[ "$_host_node_bin" == "${NVM_DIR:-$HOME/.nvm}"/* ]] && _NODE_BIN="$_host_node_bin"
+fi
+
+_SANDBOX_PATH="$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:${_NODE_BIN:+$_NODE_BIN:}/opt/ccode-bin:/opt/cargo-host/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 [[ -n "${CCODE_EXTRA_BIN_DIR:-}" ]] && _SANDBOX_PATH="${CCODE_EXTRA_BIN_DIR}:${_SANDBOX_PATH}"
 
 # Build the bwrap argv as an array. Bash does not allow `# comment` lines
@@ -121,7 +142,7 @@ args=(
     # (Note: RO does not prevent exfiltration. Bearer tokens here remain
     # within reach of a compromised agent — see README.)
     --ro-bind "$HOME/.gitconfig"             "$HOME/.gitconfig"
-    --ro-bind "$HOME/.nvm"                   "$HOME/.nvm"
+    --ro-bind-try "$HOME/.nvm"               "$HOME/.nvm"
     --ro-bind "$HOME/.local/bin"             "$HOME/.local/bin"
     --ro-bind "$HOME/.local/share/claude"    "$HOME/.local/share/claude"
     --ro-bind "$HOME/.arcrc"                 "$HOME/.arcrc"
@@ -165,6 +186,19 @@ args=(
     # but the storage is in $HOME/.sandbox/<tool>, separate from the host.
     --bind   "$SBX/cargo"             "$HOME/.cargo"
     --bind   "$SBX/uv"                "$HOME/.local/share/uv"
+
+    # npm, pip and go have no single "everything lives here" dir to mount
+    # over, so their caches keep the $SBX paths the env vars below name and
+    # are bound in place. Without these binds those paths do not exist inside
+    # the sandbox at all: every write lands on the throwaway tmpfs root and
+    # is gone at exit, so each session re-downloads the whole package cache
+    # and `npm i -g` never survives.
+    --bind   "$SBX/npm"               "$SBX/npm"
+    --bind   "$SBX/npm-prefix"        "$SBX/npm-prefix"
+    --bind   "$SBX/npmrc"             "$SBX/npmrc"
+    --bind   "$SBX/pip"               "$SBX/pip"
+    --bind   "$SBX/go"                "$SBX/go"
+
     # Rust toolchains (rustup-managed): host-shared, read-only. `rustup
     # update` will fail inside the sandbox by design — install toolchains
     # on the host.
@@ -196,8 +230,8 @@ args=(
 
     # Point npm/pip/go at sandbox-only caches. cargo and uv use their default
     # locations, which are already mounted to the sandbox dirs above.
-    --setenv NPM_CONFIG_CACHE  "$SBX/npm"
-    --setenv NPM_CONFIG_PREFIX "$SBX/npm-prefix"
+    --setenv NPM_CONFIG_CACHE      "$SBX/npm"
+    --setenv NPM_CONFIG_USERCONFIG "$SBX/npmrc"
     --setenv PIP_CACHE_DIR     "$SBX/pip"
     --setenv GOPATH            "$SBX/go"
     --setenv GOMODCACHE        "$SBX/go/pkg/mod"
