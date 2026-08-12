@@ -140,6 +140,13 @@ args=(
     --ro-bind-try /etc/crypto-policies /etc/crypto-policies
     --ro-bind /etc/passwd           /etc/passwd
     --ro-bind /etc/group            /etc/group
+    # man-db's config, named /etc/manpath.config on Debian/Ubuntu and
+    # /etc/man_db.conf on Fedora/Arch. Not optional cosmetics: shell rc files
+    # and completion setups run manpath(1), which errors out without it, so
+    # every command the Bash tool runs starts with a "can't open the manpath
+    # configuration file" line on stderr.
+    --ro-bind-try /etc/manpath.config /etc/manpath.config
+    --ro-bind-try /etc/man_db.conf    /etc/man_db.conf
 
     # --- Read-only credentials and tool config ---
     # Readable so claude can authenticate; not writable so it cannot tamper.
