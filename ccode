@@ -52,15 +52,6 @@ mkdir -p \
     "$SBX/go" \
     "$SBX/empty-hooks"
 
-# npm's global prefix cannot be handed over as NPM_CONFIG_PREFIX: nvm's
-# nvm_die_on_prefix() refuses to activate any node version while that variable
-# points anywhere other than the version dir itself, which left nvm users with
-# no node at all inside the sandbox. npm also reads `prefix` from the user
-# npmrc, and nvm never looks at npmrc files, so route it through one. Created
-# once and then left alone: `npm login` inside the sandbox writes its auth
-# token here and rewriting the file every launch would throw that away.
-[[ -f "$SBX/npmrc" ]] || printf 'prefix=%s\n' "$SBX/npm-prefix" > "$SBX/npmrc"
-
 # rr's default trace directory. Bound read-write below so traces survive the
 # session; create it on the host first, since rr may never have run here.
 mkdir -p "$HOME/.local/share/rr"
@@ -107,6 +98,45 @@ _host_node="$(command -v node 2>/dev/null || true)"
 if [[ -n "$_host_node" ]]; then
     _host_node_bin="$(cd "$(dirname "$_host_node")" && pwd)"
     [[ "$_host_node_bin" == "${NVM_DIR:-$HOME/.nvm}"/* ]] && _NODE_BIN="$_host_node_bin"
+fi
+
+# Where `npm i -g` installs. The storage is always $SBX/npm-prefix, but the
+# path npm is *configured* with has to sit inside the nvm tree, or
+# nvm_die_on_prefix() deactivates the version it was about to activate — which
+# leaves the sandbox with no node at all, plus a "nvm is not compatible with the
+# npm config "prefix" option" warning on every shell startup. Which part of the
+# tree depends on the nvm version: up to 0.35 the prefix has to be somewhere
+# under $NVM_DIR, 0.36 wants it under the version directory itself, and 0.37
+# stopped resolving the prefix through `npm config get prefix` altogether — it
+# only greps npmrc files, none of which is the NPM_CONFIG_USERCONFIG one below.
+# A path inside the active version directory satisfies all three. Bridge it to
+# the sandbox storage with a symlink, created on the host: ~/.nvm is exposed
+# read-only, and bwrap cannot create a mountpoint under a read-only bind.
+NPM_PREFIX="$SBX/npm-prefix"
+_NVM_TREE="${NVM_DIR:-$HOME/.nvm}"
+if [[ -n "$_NODE_BIN" ]]; then
+    NPM_PREFIX="${_NODE_BIN%/bin}/ccode-npm-prefix"
+elif [[ -d "$_NVM_TREE" ]]; then
+    # nvm is installed but no version is active on the host, so we cannot know
+    # which one the sandbox will activate. $NVM_DIR is the best we can do.
+    NPM_PREFIX="$_NVM_TREE/ccode-npm-prefix"
+fi
+[[ "$NPM_PREFIX" == "$SBX/npm-prefix" ]] || ln -sfn "$SBX/npm-prefix" "$NPM_PREFIX"
+
+# The prefix cannot be handed over as NPM_CONFIG_PREFIX: nvm 0.33 refuses to
+# activate node while that variable is set at all, whatever its value. npm also
+# reads `prefix` from the user npmrc, so route it through one. Only the prefix
+# line is rewritten, and only when it is stale — `npm login` inside the sandbox
+# writes its auth token to this file, and recreating it every launch would throw
+# that away.
+if [[ ! -f "$SBX/npmrc" ]]; then
+    printf 'prefix=%s\n' "$NPM_PREFIX" > "$SBX/npmrc"
+elif ! grep -qxF "prefix=$NPM_PREFIX" "$SBX/npmrc"; then
+    {
+        grep -v '^prefix[[:space:]]*=' "$SBX/npmrc" || true
+        printf 'prefix=%s\n' "$NPM_PREFIX"
+    } > "$SBX/npmrc.new"
+    mv "$SBX/npmrc.new" "$SBX/npmrc"
 fi
 
 _SANDBOX_PATH="$HOME/.cargo/bin:$HOME/.local/bin:$SBX/npm-prefix/bin:${_NODE_BIN:+$_NODE_BIN:}/opt/ccode-bin:/opt/cargo-host/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
